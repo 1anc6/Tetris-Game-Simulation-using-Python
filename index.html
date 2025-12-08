@@ -365,558 +365,559 @@
   </div>
 
   <script>
-    // --- COLORS ---
-    const Colors = {
-      darkGrey: "rgb(20,20,30)",
-      green: "#10b981",
-      red: "#ef4444",
-      orange: "#f59e0b",
-      yellow: "#fbbf24",
-      purple: "#a855f7",
-      cyan: "#06b6d4",
-      blue: "#3b82f6",
-      darkBlue: "rgb(30,30,50)",
-      white: "#ffffff",
+  // --- COLORS ---
+  const Colors = {
+    darkGrey: "rgb(20,20,30)",
+    green: "#10b981",
+    red: "#ef4444",
+    orange: "#f59e0b",
+    yellow: "#fbbf24",
+    purple: "#a855f7",
+    cyan: "#06b6d4",
+    blue: "#3b82f6",
+    darkBlue: "rgb(30,30,50)",
+    white: "#ffffff",
 
-      getCellColors() {
-        return [
-          this.darkGrey,
-          this.green,
-          this.red,
-          this.orange,
-          this.yellow,
-          this.purple,
-          this.cyan,
-          this.blue,
-        ];
-      },
-    };
+    getCellColors() {
+      return [
+        this.darkGrey,
+        this.green,
+        this.red,
+        this.orange,
+        this.yellow,
+        this.purple,
+        this.cyan,
+        this.blue,
+      ];
+    },
+  };
 
-    // --- SETUP ---
-    const canvas = document.getElementById("game");
-    const ctx = canvas.getContext("2d");
+  // --- SETUP ---
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
 
-    const nextCanvas = document.getElementById("next-piece");
-    const nextCtx = nextCanvas.getContext("2d");
+  const nextCanvas = document.getElementById("next-piece");
+  const nextCtx = nextCanvas.getContext("2d");
 
-    const scoreSpan = document.getElementById("score");
-    const linesSpan = document.getElementById("lines");
-    const finalScoreSpan = document.getElementById("final-score");
-    const gameOverOverlay = document.getElementById("game-over-overlay");
+  const scoreSpan = document.getElementById("score");
+  const linesSpan = document.getElementById("lines");
+  const finalScoreSpan = document.getElementById("final-score");
+  const gameOverOverlay = document.getElementById("game-over-overlay");
 
-    // --- Position class ---
-    class Position {
-      constructor(row, column) {
-        this.row = row;
-        this.column = column;
-      }
+  // --- Position class ---
+  class Position {
+    constructor(row, column) {
+      this.row = row;
+      this.column = column;
+    }
+  }
+
+  // --- Block base class ---
+  class Block {
+    constructor(id) {
+      this.id = id;
+      this.cells = {};
+      this.cellSize = 30;
+      this.rowOffset = 0;
+      this.columnOffset = 0;
+      this.rotationState = 0;
+      this.colors = Colors.getCellColors();
     }
 
-    // --- Block base class ---
-    class Block {
-      constructor(id) {
-        this.id = id;
-        this.cells = {};
-        this.cellSize = 30;
-        this.rowOffset = 0;
-        this.columnOffset = 0;
+    move(rows, columns) {
+      this.rowOffset += rows;
+      this.columnOffset += columns;
+    }
+
+    getCellPositions() {
+      const tiles = this.cells[this.rotationState];
+      const movedTiles = [];
+      for (const position of tiles) {
+        movedTiles.push(
+          new Position(
+            position.row + this.rowOffset,
+            position.column + this.columnOffset
+          )
+        );
+      }
+      return movedTiles;
+    }
+
+    rotate() {
+      this.rotationState += 1;
+      if (this.rotationState === Object.keys(this.cells).length) {
         this.rotationState = 0;
-        this.colors = Colors.getCellColors();
       }
+    }
 
-      move(rows, columns) {
-        this.rowOffset += rows;
-        this.columnOffset += columns;
+    undoRotation() {
+      this.rotationState -= 1;
+      if (this.rotationState === -1) {
+        this.rotationState = Object.keys(this.cells).length - 1;
       }
+    }
 
-      getCellPositions() {
-        const tiles = this.cells[this.rotationState];
-        const movedTiles = [];
-        for (const position of tiles) {
-          movedTiles.push(
-            new Position(
-              position.row + this.rowOffset,
-              position.column + this.columnOffset
-            )
-          );
+    draw(ctx, offsetX, offsetY) {
+      const tiles = this.getCellPositions();
+      for (const tile of tiles) {
+        const x = offsetX + tile.column * this.cellSize;
+        const y = offsetY + tile.row * this.cellSize;
+        
+        // Main cell color
+        ctx.fillStyle = this.colors[this.id];
+        ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
+        
+        // Gradient overlay for depth
+        const gradient = ctx.createLinearGradient(x, y, x + this.cellSize, y + this.cellSize);
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
+        
+        // Border highlight
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 1.5, y + 1.5, this.cellSize - 3, this.cellSize - 3);
+      }
+    }
+  }
+
+  // --- Block types ---
+  class LBlock extends Block {
+    constructor() {
+      super(1);
+      this.cells = {
+        0: [new Position(0, 2), new Position(1, 0), new Position(1, 1), new Position(1, 2)],
+        1: [new Position(0, 1), new Position(1, 1), new Position(2, 1), new Position(2, 2)],
+        2: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(2, 0)],
+        3: [new Position(0, 0), new Position(0, 1), new Position(1, 1), new Position(2, 1)],
+      };
+      this.move(0, 3);
+    }
+  }
+
+  class JBlock extends Block {
+    constructor() {
+      super(2);
+      this.cells = {
+        0: [new Position(0, 0), new Position(1, 0), new Position(1, 1), new Position(1, 2)],
+        1: [new Position(0, 1), new Position(0, 2), new Position(1, 1), new Position(2, 1)],
+        2: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(2, 2)],
+        3: [new Position(0, 1), new Position(1, 1), new Position(2, 0), new Position(2, 1)],
+      };
+      this.move(0, 3);
+    }
+  }
+
+  class IBlock extends Block {
+    constructor() {
+      super(3);
+      this.cells = {
+        0: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(1, 3)],
+        1: [new Position(0, 2), new Position(1, 2), new Position(2, 2), new Position(3, 2)],
+        2: [new Position(2, 0), new Position(2, 1), new Position(2, 2), new Position(2, 3)],
+        3: [new Position(0, 1), new Position(1, 1), new Position(2, 1), new Position(3, 1)],
+      };
+      this.move(-1, 3);
+    }
+  }
+
+  class OBlock extends Block {
+    constructor() {
+      super(4);
+      this.cells = {
+        0: [new Position(0, 0), new Position(0, 1), new Position(1, 0), new Position(1, 1)],
+      };
+      this.move(0, 4);
+    }
+  }
+
+  class SBlock extends Block {
+    constructor() {
+      super(5);
+      this.cells = {
+        0: [new Position(0, 1), new Position(0, 2), new Position(1, 0), new Position(1, 1)],
+        1: [new Position(0, 1), new Position(1, 1), new Position(1, 2), new Position(2, 2)],
+        2: [new Position(1, 1), new Position(1, 2), new Position(2, 0), new Position(2, 1)],
+        3: [new Position(0, 0), new Position(1, 0), new Position(1, 1), new Position(2, 1)],
+      };
+      this.move(0, 3);
+    }
+  }
+
+  class TBlock extends Block {
+    constructor() {
+      super(6);
+      this.cells = {
+        0: [new Position(0, 1), new Position(1, 0), new Position(1, 1), new Position(1, 2)],
+        1: [new Position(0, 1), new Position(1, 1), new Position(1, 2), new Position(2, 1)],
+        2: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(2, 1)],
+        3: [new Position(0, 1), new Position(1, 0), new Position(1, 1), new Position(2, 1)],
+      };
+      this.move(0, 3);
+    }
+  }
+
+  class ZBlock extends Block {
+    constructor() {
+      super(7);
+      this.cells = {
+        0: [new Position(0, 0), new Position(0, 1), new Position(1, 1), new Position(1, 2)],
+        1: [new Position(0, 2), new Position(1, 1), new Position(1, 2), new Position(2, 1)],
+        2: [new Position(1, 0), new Position(1, 1), new Position(2, 1), new Position(2, 2)],
+        3: [new Position(0, 1), new Position(1, 0), new Position(1, 1), new Position(2, 0)],
+      };
+      this.move(0, 3);
+    }
+  }
+
+  // --- Grid class ---
+  class Grid {
+    constructor() {
+      this.numRows = 20;
+      this.numCols = 10;
+      this.cellSize = 30;
+      this.grid = [];
+      this.colors = Colors.getCellColors();
+
+      for (let i = 0; i < this.numRows; i++) {
+        const row = [];
+        for (let j = 0; j < this.numCols; j++) {
+          row.push(0);
         }
-        return movedTiles;
+        this.grid.push(row);
       }
+    }
 
-      rotate() {
-        this.rotationState += 1;
-        if (this.rotationState === Object.keys(this.cells).length) {
-          this.rotationState = 0;
+    isInside(row, column) {
+      return row >= 0 && row < this.numRows && column >= 0 && column < this.numCols;
+    }
+
+    isEmpty(row, column) {
+      return this.grid[row][column] === 0;
+    }
+
+    isRowFull(row) {
+      for (let column = 0; column < this.numCols; column++) {
+        if (this.grid[row][column] === 0) return false;
+      }
+      return true;
+    }
+
+    clearRow(row) {
+      for (let column = 0; column < this.numCols; column++) {
+        this.grid[row][column] = 0;
+      }
+    }
+
+    moveRowDown(row, numRows) {
+      for (let column = 0; column < this.numCols; column++) {
+        this.grid[row + numRows][column] = this.grid[row][column];
+        this.grid[row][column] = 0;
+      }
+    }
+
+    clearFullRows() {
+      let completed = 0;
+      for (let row = this.numRows - 1; row >= 0; row--) {
+        if (this.isRowFull(row)) {
+          this.clearRow(row);
+          completed += 1;
+        } else if (completed > 0) {
+          this.moveRowDown(row, completed);
         }
       }
-
-      undoRotation() {
-        this.rotationState -= 1;
-        if (this.rotationState === -1) {
-          this.rotationState = Object.keys(this.cells).length - 1;
-        }
-      }
-
-      draw(ctx, offsetX, offsetY) {
-        const tiles = this.getCellPositions();
-        for (const tile of tiles) {
-          const x = offsetX + tile.column * this.cellSize;
-          const y = offsetY + tile.row * this.cellSize;
-          
-          // Main cell color
-          ctx.fillStyle = this.colors[this.id];
-          ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
-          
-          // Gradient overlay for depth
-          const gradient = ctx.createLinearGradient(x, y, x + this.cellSize, y + this.cellSize);
-          gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
-          gradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
-          ctx.fillStyle = gradient;
-          ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
-          
-          // Border highlight
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 1.5, y + 1.5, this.cellSize - 3, this.cellSize - 3);
-        }
-      }
+      return completed;
     }
 
-    // --- Block types ---
-    class LBlock extends Block {
-      constructor() {
-        super(1);
-        this.cells = {
-          0: [new Position(0, 2), new Position(1, 0), new Position(1, 1), new Position(1, 2)],
-          1: [new Position(0, 1), new Position(1, 1), new Position(2, 1), new Position(2, 2)],
-          2: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(2, 0)],
-          3: [new Position(0, 0), new Position(0, 1), new Position(1, 1), new Position(2, 1)],
-        };
-        this.move(0, 3);
-      }
-    }
-
-    class JBlock extends Block {
-      constructor() {
-        super(2);
-        this.cells = {
-          0: [new Position(0, 0), new Position(1, 0), new Position(1, 1), new Position(1, 2)],
-          1: [new Position(0, 1), new Position(0, 2), new Position(1, 1), new Position(2, 1)],
-          2: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(2, 2)],
-          3: [new Position(0, 1), new Position(1, 1), new Position(2, 0), new Position(2, 1)],
-        };
-        this.move(0, 3);
-      }
-    }
-
-    class IBlock extends Block {
-      constructor() {
-        super(3);
-        this.cells = {
-          0: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(1, 3)],
-          1: [new Position(0, 2), new Position(1, 2), new Position(2, 2), new Position(3, 2)],
-          2: [new Position(2, 0), new Position(2, 1), new Position(2, 2), new Position(2, 3)],
-          3: [new Position(0, 1), new Position(1, 1), new Position(2, 1), new Position(3, 1)],
-        };
-        this.move(-1, 3);
-      }
-    }
-
-    class OBlock extends Block {
-      constructor() {
-        super(4);
-        this.cells = {
-          0: [new Position(0, 0), new Position(0, 1), new Position(1, 0), new Position(1, 1)],
-        };
-        this.move(0, 4);
-      }
-    }
-
-    class SBlock extends Block {
-      constructor() {
-        super(5);
-        this.cells = {
-          0: [new Position(0, 1), new Position(0, 2), new Position(1, 0), new Position(1, 1)],
-          1: [new Position(0, 1), new Position(1, 1), new Position(1, 2), new Position(2, 2)],
-          2: [new Position(1, 1), new Position(1, 2), new Position(2, 0), new Position(2, 1)],
-          3: [new Position(0, 0), new Position(1, 0), new Position(1, 1), new Position(2, 1)],
-        };
-        this.move(0, 3);
-      }
-    }
-
-    class TBlock extends Block {
-      constructor() {
-        super(6);
-        this.cells = {
-          0: [new Position(0, 1), new Position(1, 0), new Position(1, 1), new Position(1, 2)],
-          1: [new Position(0, 1), new Position(1, 1), new Position(1, 2), new Position(2, 1)],
-          2: [new Position(1, 0), new Position(1, 1), new Position(1, 2), new Position(2, 1)],
-          3: [new Position(0, 1), new Position(1, 0), new Position(1, 1), new Position(2, 1)],
-        };
-        this.move(0, 3);
-      }
-    }
-
-    class ZBlock extends Block {
-      constructor() {
-        super(7);
-        this.cells = {
-          0: [new Position(0, 0), new Position(0, 1), new Position(1, 1), new Position(1, 2)],
-          1: [new Position(0, 2), new Position(1, 1), new Position(1, 2), new Position(2, 1)],
-          2: [new Position(1, 0), new Position(1, 1), new Position(2, 1), new Position(2, 2)],
-          3: [new Position(0, 1), new Position(1, 0), new Position(1, 1), new Position(2, 0)],
-        };
-        this.move(0, 3);
-      }
-    }
-
-    // --- Grid class ---
-    class Grid {
-      constructor() {
-        this.numRows = 20;
-        this.numCols = 10;
-        this.cellSize = 30;
-        this.grid = [];
-        this.colors = Colors.getCellColors();
-
-        for (let i = 0; i < this.numRows; i++) {
-          const row = [];
-          for (let j = 0; j < this.numCols; j++) {
-            row.push(0);
-          }
-          this.grid.push(row);
-        }
-      }
-
-      isInside(row, column) {
-        return row >= 0 && row < this.numRows && column >= 0 && column < this.numCols;
-      }
-
-      isEmpty(row, column) {
-        return this.grid[row][column] === 0;
-      }
-
-      isRowFull(row) {
-        for (let column = 0; column < this.numCols; column++) {
-          if (this.grid[row][column] === 0) return false;
-        }
-        return true;
-      }
-
-      clearRow(row) {
+    reset() {
+      for (let row = 0; row < this.numRows; row++) {
         for (let column = 0; column < this.numCols; column++) {
           this.grid[row][column] = 0;
         }
       }
+    }
 
-      moveRowDown(row, numRows) {
+    draw(ctx) {
+      for (let row = 0; row < this.numRows; row++) {
         for (let column = 0; column < this.numCols; column++) {
-          this.grid[row + numRows][column] = this.grid[row][column];
-          this.grid[row][column] = 0;
-        }
-      }
-
-      clearFullRows() {
-        let completed = 0;
-        for (let row = this.numRows - 1; row >= 0; row--) {
-          if (this.isRowFull(row)) {
-            this.clearRow(row);
-            completed += 1;
-          } else if (completed > 0) {
-            this.moveRowDown(row, completed);
-          }
-        }
-        return completed;
-      }
-
-      reset() {
-        for (let row = 0; row < this.numRows; row++) {
-          for (let column = 0; column < this.numCols; column++) {
-            this.grid[row][column] = 0;
-          }
-        }
-      }
-
-      draw(ctx) {
-        for (let row = 0; row < this.numRows; row++) {
-          for (let column = 0; column < this.numCols; column++) {
-            const cellValue = this.grid[row][column];
-            const x = column * this.cellSize + 10;
-            const y = row * this.cellSize + 10;
-            
-            // Main cell
-            ctx.fillStyle = this.colors[cellValue];
+          const cellValue = this.grid[row][column];
+          const x = column * this.cellSize + 10;
+          const y = row * this.cellSize + 10;
+          
+          // Main cell
+          ctx.fillStyle = this.colors[cellValue];
+          ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
+          
+          // Add gradient to locked blocks
+          if (cellValue !== 0) {
+            const gradient = ctx.createLinearGradient(x, y, x + this.cellSize, y + this.cellSize);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 0.2)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0.2)');
+            ctx.fillStyle = gradient;
             ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
             
-            // Add gradient to locked blocks
-            if (cellValue !== 0) {
-              const gradient = ctx.createLinearGradient(x, y, x + this.cellSize, y + this.cellSize);
-              gradient.addColorStop(0, 'rgba(255, 255, 255, 0.2)');
-              gradient.addColorStop(1, 'rgba(0, 0, 0, 0.2)');
-              ctx.fillStyle = gradient;
-              ctx.fillRect(x + 1, y + 1, this.cellSize - 2, this.cellSize - 2);
-              
-              // Border
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-              ctx.lineWidth = 1;
-              ctx.strokeRect(x + 1.5, y + 1.5, this.cellSize - 3, this.cellSize - 3);
-            }
+            // Border
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 1.5, y + 1.5, this.cellSize - 3, this.cellSize - 3);
           }
         }
       }
     }
+  }
 
-    // --- Game class ---
-    class Game {
-      constructor() {
-        this.grid = new Grid();
+  // --- Game class ---
+  class Game {
+    constructor() {
+      this.grid = new Grid();
+      this.blocks = this.createBlockBag();
+      this.currentBlock = this.getRandomBlock();
+      this.nextBlock = this.getRandomBlock();
+      this.gameOver = false;
+      this.score = 0;
+      this.linesCleared = 0;
+    }
+
+    createBlockBag() {
+      return [
+        new IBlock(),
+        new JBlock(),
+        new LBlock(),
+        new OBlock(),
+        new SBlock(),
+        new TBlock(),
+        new ZBlock(),
+      ];
+    }
+
+    updateScore(linesCleared, moveDownPoints) {
+      if (linesCleared === 1) {
+        this.score += 100;
+      } else if (linesCleared === 2) {
+        this.score += 300;
+      } else if (linesCleared === 3) {
+        this.score += 500;
+      } else if (linesCleared === 4) {
+        this.score += 800;
+      }
+      this.score += moveDownPoints;
+      this.linesCleared += linesCleared;
+    }
+
+    getRandomBlock() {
+      if (this.blocks.length === 0) {
         this.blocks = this.createBlockBag();
-        this.currentBlock = this.getRandomBlock();
-        this.nextBlock = this.getRandomBlock();
-        this.gameOver = false;
-        this.score = 0;
-        this.linesCleared = 0;
       }
+      const index = Math.floor(Math.random() * this.blocks.length);
+      const block = this.blocks[index];
+      this.blocks.splice(index, 1);
+      return block;
+    }
 
-      createBlockBag() {
-        return [
-          new IBlock(),
-          new JBlock(),
-          new LBlock(),
-          new OBlock(),
-          new SBlock(),
-          new TBlock(),
-          new ZBlock(),
-        ];
-      }
-
-      updateScore(linesCleared, moveDownPoints) {
-        if (linesCleared === 1) {
-          this.score += 100;
-        } else if (linesCleared === 2) {
-          this.score += 300;
-        } else if (linesCleared === 3) {
-          this.score += 500;
-        } else if (linesCleared === 4) {
-          this.score += 800;
-        }
-        this.score += moveDownPoints;
-        this.linesCleared += linesCleared;
-      }
-
-      getRandomBlock() {
-        if (this.blocks.length === 0) {
-          this.blocks = this.createBlockBag();
-        }
-        const index = Math.floor(Math.random() * this.blocks.length);
-        const block = this.blocks[index];
-        this.blocks.splice(index, 1);
-        return block;
-      }
-
-      moveLeft() {
-        this.currentBlock.move(0, -1);
-        if (!this.blockInside() || !this.blockFits()) {
-          this.currentBlock.move(0, 1);
-        }
-      }
-
-      moveRight() {
+    moveLeft() {
+      this.currentBlock.move(0, -1);
+      if (!this.blockInside() || !this.blockFits()) {
         this.currentBlock.move(0, 1);
-        if (!this.blockInside() || !this.blockFits()) {
-          this.currentBlock.move(0, -1);
-        }
-      }
-
-      moveDown() {
-        this.currentBlock.move(1, 0);
-        if (!this.blockInside() || !this.blockFits()) {
-          this.currentBlock.move(-1, 0);
-          this.lockBlock();
-        }
-      }
-
-      lockBlock() {
-        const tiles = this.currentBlock.getCellPositions();
-        for (const position of tiles) {
-          if (this.grid.isInside(position.row, position.column)) {
-            this.grid.grid[position.row][position.column] = this.currentBlock.id;
-          }
-        }
-
-        this.currentBlock = this.nextBlock;
-        this.nextBlock = this.getRandomBlock();
-
-        const rowsCleared = this.grid.clearFullRows();
-        if (rowsCleared > 0) {
-          this.updateScore(rowsCleared, 0);
-        }
-
-        if (!this.blockFits()) {
-          this.gameOver = true;
-        }
-      }
-
-      reset() {
-        this.grid.reset();
-        this.blocks = this.createBlockBag();
-        this.currentBlock = this.getRandomBlock();
-        this.nextBlock = this.getRandomBlock();
-        this.score = 0;
-        this.linesCleared = 0;
-        this.gameOver = false;
-      }
-
-      blockFits() {
-        const tiles = this.currentBlock.getCellPositions();
-        for (const tile of tiles) {
-          if (!this.grid.isInside(tile.row, tile.column)) return false;
-          if (!this.grid.isEmpty(tile.row, tile.column)) return false;
-        }
-        return true;
-      }
-
-      rotate() {
-        this.currentBlock.rotate();
-        if (!this.blockInside() || !this.blockFits()) {
-          this.currentBlock.undoRotation();
-        }
-      }
-
-      blockInside() {
-        const tiles = this.currentBlock.getCellPositions();
-        for (const tile of tiles) {
-          if (!this.grid.isInside(tile.row, tile.column)) return false;
-        }
-        return true;
-      }
-
-      drawMainPlayfield(ctx) {
-        this.grid.draw(ctx);
-        this.currentBlock.draw(ctx, 10, 10);
-      }
-
-      drawNextBlock(ctx) {
-        ctx.fillStyle = Colors.darkGrey;
-        ctx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
-
-        const tempBlock = Object.create(Object.getPrototypeOf(this.nextBlock));
-        Object.assign(tempBlock, this.nextBlock);
-        tempBlock.rowOffset = 0;
-        tempBlock.columnOffset = 0;
-
-        let offsetX, offsetY;
-        if (this.nextBlock.id === 3) {
-          offsetX = 15;
-          offsetY = 45;
-        } else if (this.nextBlock.id === 4) {
-          offsetX = 30;
-          offsetY = 30;
-        } else {
-          offsetX = 15;
-          offsetY = 30;
-        }
-
-        tempBlock.draw(ctx, offsetX, offsetY);
       }
     }
 
-    const game = new Game();
-
-    // --- Unified action handler for keyboard + clicks ---
-    function handleAction(action) {
-      if (game.gameOver) {
-        // Restart game on any action when over
-        game.reset();
-        return;
-      }
-
-      if (action === "left") {
-        game.moveLeft();
-      } else if (action === "right") {
-        game.moveRight();
-      } else if (action === "down") {
-        game.moveDown();
-        game.updateScore(0, 1); // soft drop bonus
-      } else if (action === "rotate") {
-        game.rotate();
+    moveRight() {
+      this.currentBlock.move(0, 1);
+      if (!this.blockInside() || !this.blockFits()) {
+        this.currentBlock.move(0, -1);
       }
     }
 
-    // --- Keyboard input ---
-    document.addEventListener("keydown", (event) => {
-      switch (event.key) {
-        case "ArrowLeft":
-          event.preventDefault();
-          handleAction("left");
-          break;
-        case "ArrowRight":
-          event.preventDefault();
-          handleAction("right");
-          break;
-        case "ArrowDown":
-          event.preventDefault();
-          handleAction("down");
-          break;
-        case "ArrowUp":
-          event.preventDefault();
-          handleAction("rotate");
-          break;
-        default:
-          // Any other key also restarts if game over
-          if (game.gameOver) {
-            game.reset();
-          }
+    moveDown() {
+      this.currentBlock.move(1, 0);
+      if (!this.blockInside() || !this.blockFits()) {
+        this.currentBlock.move(-1, 0);
+        this.lockBlock();
       }
-    });
+    }
 
-    // --- Click / tap input on sidebar controls ---
-    document.querySelectorAll(".control-item").forEach((item) => {
-      const action = item.getAttribute("data-action");
-      // click works for both mouse and touch on mobile
-      item.addEventListener("click", (e) => {
-        e.preventDefault();
-        handleAction(action);
-      });
-    });
-
-    // Optional: tap overlay to restart
-    gameOverOverlay.addEventListener("click", () => {
-      if (game.gameOver) {
-        game.reset();
+    lockBlock() {
+      const tiles = this.currentBlock.getCellPositions();
+      for (const position of tiles) {
+        if (this.grid.isInside(position.row, position.column)) {
+          this.grid.grid[position.row][position.column] = this.currentBlock.id;
+        }
       }
-    });
 
-    // --- Auto drop ---
-    setInterval(() => {
-      if (!game.gameOver) {
-        game.moveDown();
+      this.currentBlock = this.nextBlock;
+      this.nextBlock = this.getRandomBlock();
+
+      const rowsCleared = this.grid.clearFullRows();
+      if (rowsCleared > 0) {
+        this.updateScore(rowsCleared, 0);
       }
-    }, 500);
 
-    // --- Main render loop ---
-    function render() {
-      ctx.fillStyle = Colors.darkBlue;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (!this.blockFits()) {
+        this.gameOver = true;
+      }
+    }
 
-      game.drawMainPlayfield(ctx);
+    reset() {
+      this.grid.reset();
+      this.blocks = this.createBlockBag();
+      this.currentBlock = this.getRandomBlock();
+      this.nextBlock = this.getRandomBlock();
+      this.score = 0;
+      this.linesCleared = 0;
+      this.gameOver = false;
+    }
 
-      scoreSpan.textContent = game.score;
-      linesSpan.textContent = game.linesCleared;
-      game.drawNextBlock(nextCtx);
+    blockFits() {
+      const tiles = this.currentBlock.getCellPositions();
+      for (const tile of tiles) {
+        if (!this.grid.isInside(tile.row, tile.column)) return false;
+        if (!this.grid.isEmpty(tile.row, tile.column)) return false;
+      }
+      return true;
+    }
 
-      if (game.gameOver) {
-        gameOverOverlay.classList.add("visible");
-        finalScoreSpan.textContent = game.score;
+    rotate() {
+      this.currentBlock.rotate();
+      if (!this.blockInside() || !this.blockFits()) {
+        this.currentBlock.undoRotation();
+      }
+    }
+
+    blockInside() {
+      const tiles = this.currentBlock.getCellPositions();
+      for (const tile of tiles) {
+        if (!this.grid.isInside(tile.row, tile.column)) return false;
+      }
+      return true;
+    }
+
+    drawMainPlayfield(ctx) {
+      this.grid.draw(ctx);
+      this.currentBlock.draw(ctx, 10, 10);
+    }
+
+    drawNextBlock(ctx) {
+      ctx.fillStyle = Colors.darkGrey;
+      ctx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+
+      const tempBlock = Object.create(Object.getPrototypeOf(this.nextBlock));
+      Object.assign(tempBlock, this.nextBlock);
+      tempBlock.rowOffset = 0;
+      tempBlock.columnOffset = 0;
+
+      let offsetX, offsetY;
+      if (this.nextBlock.id === 3) {
+        // I piece: 4 cells * 30px = 120px wide; start at x=0 so it fits fully
+        offsetX = 0;
+        offsetY = 15;
+      } else if (this.nextBlock.id === 4) {
+        offsetX = 30;
+        offsetY = 30;
       } else {
-        gameOverOverlay.classList.remove("visible");
+        offsetX = 15;
+        offsetY = 30;
       }
 
-      requestAnimationFrame(render);
+      tempBlock.draw(ctx, offsetX, offsetY);
+    }
+  }
+
+  const game = new Game();
+
+  // --- Unified action handler for keyboard + clicks ---
+  function handleAction(action) {
+    if (game.gameOver) {
+      // Restart game on any action when over
+      game.reset();
+      return;
     }
 
-    render();
-  </script>
+    if (action === "left") {
+      game.moveLeft();
+    } else if (action === "right") {
+      game.moveRight();
+    } else if (action === "down") {
+      game.moveDown();
+      game.updateScore(0, 1); // soft drop bonus
+    } else if (action === "rotate") {
+      game.rotate();
+    }
+  }
+
+  // --- Keyboard input ---
+  document.addEventListener("keydown", (event) => {
+    switch (event.key) {
+      case "ArrowLeft":
+        event.preventDefault();
+        handleAction("left");
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        handleAction("right");
+        break;
+      case "ArrowDown":
+        event.preventDefault();
+        handleAction("down");
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        handleAction("rotate");
+        break;
+      default:
+        // Any other key also restarts if game over
+        if (game.gameOver) {
+          game.reset();
+        }
+    }
+  });
+
+  // --- Click / tap input on sidebar controls ---
+  document.querySelectorAll(".control-item").forEach((item) => {
+    const action = item.getAttribute("data-action");
+    item.addEventListener("click", (e) => {
+      e.preventDefault();
+      handleAction(action);
+    });
+  });
+
+  // Optional: tap overlay to restart
+  gameOverOverlay.addEventListener("click", () => {
+    if (game.gameOver) {
+      game.reset();
+    }
+  });
+
+  // --- Auto drop ---
+  setInterval(() => {
+    if (!game.gameOver) {
+      game.moveDown();
+    }
+  }, 500);
+
+  // --- Main render loop ---
+  function render() {
+    ctx.fillStyle = Colors.darkBlue;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    game.drawMainPlayfield(ctx);
+
+    scoreSpan.textContent = game.score;
+    linesSpan.textContent = game.linesCleared;
+    game.drawNextBlock(nextCtx);
+
+    if (game.gameOver) {
+      gameOverOverlay.classList.add("visible");
+      finalScoreSpan.textContent = game.score;
+    } else {
+      gameOverOverlay.classList.remove("visible");
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  render();
+</script>
 </body>
 </html>
+
