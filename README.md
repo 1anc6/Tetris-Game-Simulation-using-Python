@@ -1,2 +1,0 @@
-# Tetris-Game-Simulation-using-Python
-
