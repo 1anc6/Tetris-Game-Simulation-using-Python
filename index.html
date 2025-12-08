@@ -181,21 +181,18 @@
       gap: 8px;
       margin-bottom: 6px;
       transition: all 0.2s ease;
-      cursor: pointer;
-      padding: 6px;
-      border-radius: 8px;
+      cursor: pointer;           /* make clickable */
       user-select: none;
     }
 
     .control-item:hover {
       color: #ffffff;
       transform: translateX(4px);
-      background: rgba(102, 126, 234, 0.2);
     }
 
     .control-item:active {
-      background: rgba(102, 126, 234, 0.4);
-      transform: translateX(2px) scale(0.98);
+      transform: translateX(4px) scale(0.97);
+      opacity: 0.9;
     }
 
     .key-icon {
@@ -319,7 +316,7 @@
         <div class="game-over-content">
           <div class="game-over-title">GAME OVER</div>
           <div class="game-over-score">Score: <span id="final-score">0</span></div>
-          <div class="game-over-instruction">Press any key to restart</div>
+          <div class="game-over-instruction">Press any key or tap a control to restart</div>
         </div>
       </div>
     </div>
@@ -349,10 +346,19 @@
       <div class="panel">
         <div class="panel-label">Controls</div>
         <div class="controls">
-          <div class="control-item" id="btn-left"><span class="key-icon">←</span> Move Left</div>
-          <div class="control-item" id="btn-right"><span class="key-icon">→</span> Move Right</div>
-          <div class="control-item" id="btn-down"><span class="key-icon">↓</span> Soft Drop</div>
-          <div class="control-item" id="btn-rotate"><span class="key-icon">↑</span> Rotate</div>
+          <!-- added data-action attributes for click/tap handling -->
+          <div class="control-item" data-action="left">
+            <span class="key-icon">←</span> Move Left
+          </div>
+          <div class="control-item" data-action="right">
+            <span class="key-icon">→</span> Move Right
+          </div>
+          <div class="control-item" data-action="down">
+            <span class="key-icon">↓</span> Soft Drop
+          </div>
+          <div class="control-item" data-action="rotate">
+            <span class="key-icon">↑</span> Rotate
+          </div>
         </div>
       </div>
     </div>
@@ -818,67 +824,69 @@
 
     const game = new Game();
 
-    // --- Input handling (keyboard) ---
-    document.addEventListener("keydown", (event) => {
+    // --- Unified action handler for keyboard + clicks ---
+    function handleAction(action) {
       if (game.gameOver) {
-        event.preventDefault();
+        // Restart game on any action when over
         game.reset();
         return;
       }
 
+      if (action === "left") {
+        game.moveLeft();
+      } else if (action === "right") {
+        game.moveRight();
+      } else if (action === "down") {
+        game.moveDown();
+        game.updateScore(0, 1); // soft drop bonus
+      } else if (action === "rotate") {
+        game.rotate();
+      }
+    }
+
+    // --- Keyboard input ---
+    document.addEventListener("keydown", (event) => {
       switch (event.key) {
         case "ArrowLeft":
           event.preventDefault();
-          game.moveLeft();
+          handleAction("left");
           break;
         case "ArrowRight":
           event.preventDefault();
-          game.moveRight();
+          handleAction("right");
           break;
         case "ArrowDown":
           event.preventDefault();
-          game.moveDown();
-          game.updateScore(0, 1);
+          handleAction("down");
           break;
         case "ArrowUp":
           event.preventDefault();
-          game.rotate();
+          handleAction("rotate");
           break;
+        default:
+          // Any other key also restarts if game over
+          if (game.gameOver) {
+            game.reset();
+          }
       }
     });
 
-    // --- Click/Touch controls ---
-    const btnLeft = document.getElementById("btn-left");
-    const btnRight = document.getElementById("btn-right");
-    const btnDown = document.getElementById("btn-down");
-    const btnRotate = document.getElementById("btn-rotate");
-
-    // Handle both mouse clicks and touch events
-    function addControlListener(element, action) {
-      // Mouse click
-      element.addEventListener("click", (e) => {
+    // --- Click / tap input on sidebar controls ---
+    document.querySelectorAll(".control-item").forEach((item) => {
+      const action = item.getAttribute("data-action");
+      // click works for both mouse and touch on mobile
+      item.addEventListener("click", (e) => {
         e.preventDefault();
-        if (!game.gameOver) {
-          action();
-        }
+        handleAction(action);
       });
-
-      // Touch events for mobile
-      element.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        if (!game.gameOver) {
-          action();
-        }
-      });
-    }
-
-    addControlListener(btnLeft, () => game.moveLeft());
-    addControlListener(btnRight, () => game.moveRight());
-    addControlListener(btnDown, () => {
-      game.moveDown();
-      game.updateScore(0, 1);
     });
-    addControlListener(btnRotate, () => game.rotate());
+
+    // Optional: tap overlay to restart
+    gameOverOverlay.addEventListener("click", () => {
+      if (game.gameOver) {
+        game.reset();
+      }
+    });
 
     // --- Auto drop ---
     setInterval(() => {
