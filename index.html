@@ -181,11 +181,21 @@
       gap: 8px;
       margin-bottom: 6px;
       transition: all 0.2s ease;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 8px;
+      user-select: none;
     }
 
     .control-item:hover {
       color: #ffffff;
       transform: translateX(4px);
+      background: rgba(102, 126, 234, 0.2);
+    }
+
+    .control-item:active {
+      background: rgba(102, 126, 234, 0.4);
+      transform: translateX(2px) scale(0.98);
     }
 
     .key-icon {
@@ -339,10 +349,10 @@
       <div class="panel">
         <div class="panel-label">Controls</div>
         <div class="controls">
-          <div class="control-item"><span class="key-icon">←</span> Move Left</div>
-          <div class="control-item"><span class="key-icon">→</span> Move Right</div>
-          <div class="control-item"><span class="key-icon">↓</span> Soft Drop</div>
-          <div class="control-item"><span class="key-icon">↑</span> Rotate</div>
+          <div class="control-item" id="btn-left"><span class="key-icon">←</span> Move Left</div>
+          <div class="control-item" id="btn-right"><span class="key-icon">→</span> Move Right</div>
+          <div class="control-item" id="btn-down"><span class="key-icon">↓</span> Soft Drop</div>
+          <div class="control-item" id="btn-rotate"><span class="key-icon">↑</span> Rotate</div>
         </div>
       </div>
     </div>
@@ -808,7 +818,7 @@
 
     const game = new Game();
 
-    // --- Input handling (COMPLETED SECTION) ---
+    // --- Input handling (keyboard) ---
     document.addEventListener("keydown", (event) => {
       if (game.gameOver) {
         event.preventDefault();
@@ -836,6 +846,39 @@
           break;
       }
     });
+
+    // --- Click/Touch controls ---
+    const btnLeft = document.getElementById("btn-left");
+    const btnRight = document.getElementById("btn-right");
+    const btnDown = document.getElementById("btn-down");
+    const btnRotate = document.getElementById("btn-rotate");
+
+    // Handle both mouse clicks and touch events
+    function addControlListener(element, action) {
+      // Mouse click
+      element.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (!game.gameOver) {
+          action();
+        }
+      });
+
+      // Touch events for mobile
+      element.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        if (!game.gameOver) {
+          action();
+        }
+      });
+    }
+
+    addControlListener(btnLeft, () => game.moveLeft());
+    addControlListener(btnRight, () => game.moveRight());
+    addControlListener(btnDown, () => {
+      game.moveDown();
+      game.updateScore(0, 1);
+    });
+    addControlListener(btnRotate, () => game.rotate());
 
     // --- Auto drop ---
     setInterval(() => {
