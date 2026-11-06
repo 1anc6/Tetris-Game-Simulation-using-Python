@@ -538,7 +538,6 @@ function ghostRow() {
 
 function hardDrop() {
   const g = ghostRow();
-  score += 2 * (g - cur.row);
   if (g > cur.row) lastRotate = false;
   cur.row = g;
   shakeT = 110;
@@ -574,13 +573,8 @@ function lock() {
   if (full.length) {
     clearRows = full; pendingSpin = spin; phase = "clear"; phaseT = 0;
   } else {
+    // no rows cleared = no points (this also covers T-spins that clear nothing)
     combo = -1;
-    if (spin) {
-      // T-spin with no lines: scores, but doesn't start or break back-to-back
-      const pts = TSPIN_PTS[spin][0] * level;
-      score += pts;
-      msg = { lines: (spin === "mini" ? ["MINI"] : []).concat(["T-SPIN", "+" + pts]), lvUp: false, t: 0 };
-    }
     spawn();
   }
 }
@@ -670,8 +664,7 @@ function stepPlay(dt) {
   dropT += dt;
   while (dropT >= g) {
     dropT -= g;
-    if (moveDown()) { if (held.down) score += 1; }
-    else { dropT = 0; break; }
+    if (!moveDown()) { dropT = 0; break; }
   }
   // lock delay
   if (onGround()) {
@@ -716,7 +709,7 @@ function press(a) {
   switch (a) {
     case "left":      shift(-1); break;
     case "right":     shift(1); break;
-    case "down":      if (moveDown()) { score += 1; dropT = 0; } break;
+    case "down":      if (moveDown()) dropT = 0; break;
     case "rotate":    rotate(1); break;
     case "rotateCCW": rotate(-1); break;
     case "drop":      hardDrop(); break;
@@ -801,7 +794,7 @@ canvas.addEventListener("pointermove", e => {
     g.soft = true; g.moved = true;
     while (e.clientY - g.lastY >= g.step) {
       g.lastY += g.step;
-      if (moveDown()) { score += 1; dropT = 0; }
+      if (moveDown()) dropT = 0;
     }
   }
 });
@@ -953,14 +946,14 @@ const SCORING = [
   ["DOUBLE", "300"],
   ["TRIPLE", "500"],
   ["QUAD", "800"],
-  ["T-SPIN", "400"],
   ["T-SPIN SINGLE", "800"],
   ["T-SPIN DOUBLE", "1200"],
   ["T-SPIN TRIPLE", "1600"],
   ["BACK-TO-BACK", "X1.5"],
   ["COMBO", "+50 EACH"],
   ["PERFECT CLEAR", "+800-3200"],
-  ["SOFT/HARD DROP", "1/2 PER ROW"],
+  ["DROPPING PIECES", "0"],
+  ["POINTS ONLY WHEN ROWS CLEAR"],
   ["ALL POINTS X LEVEL"],
 ];
 const CREDITS = [
