@@ -147,7 +147,37 @@ const SHAPES = {
     [[0,0],[0,1],[1,1],[1,2]], [[0,2],[1,1],[1,2],[2,1]],
     [[1,0],[1,1],[2,1],[2,2]], [[0,1],[1,0],[1,1],[2,0]] ] },
 };
-const KICKS = [[0,0],[0,-1],[0,1],[-1,0],[0,-2],[0,2]];
+// Standard "SRS" wall kicks. Written as [x, y] with y pointing UP, keyed by
+// "from>to" rotation state (0 = spawn, 1 = right, 2 = 180, 3 = left).
+const KICKS_JLSTZ = {
+  "0>1": [[0,0],[-1,0],[-1, 1],[0,-2],[-1,-2]],
+  "1>0": [[0,0],[ 1,0],[ 1,-1],[0, 2],[ 1, 2]],
+  "1>2": [[0,0],[ 1,0],[ 1,-1],[0, 2],[ 1, 2]],
+  "2>1": [[0,0],[-1,0],[-1, 1],[0,-2],[-1,-2]],
+  "2>3": [[0,0],[ 1,0],[ 1, 1],[0,-2],[ 1,-2]],
+  "3>2": [[0,0],[-1,0],[-1,-1],[0, 2],[-1, 2]],
+  "3>0": [[0,0],[-1,0],[-1,-1],[0, 2],[-1, 2]],
+  "0>3": [[0,0],[ 1,0],[ 1, 1],[0,-2],[ 1,-2]],
+};
+const KICKS_I = {
+  "0>1": [[0,0],[-2,0],[ 1,0],[-2,-1],[ 1, 2]],
+  "1>0": [[0,0],[ 2,0],[-1,0],[ 2, 1],[-1,-2]],
+  "1>2": [[0,0],[-1,0],[ 2,0],[-1, 2],[ 2,-1]],
+  "2>1": [[0,0],[ 1,0],[-2,0],[ 1,-2],[-2, 1]],
+  "2>3": [[0,0],[ 2,0],[-1,0],[ 2, 1],[-1,-2]],
+  "3>2": [[0,0],[-2,0],[ 1,0],[-2,-1],[ 1, 2]],
+  "3>0": [[0,0],[ 1,0],[-2,0],[ 1,-2],[-2, 1]],
+  "0>3": [[0,0],[-1,0],[ 2,0],[-1, 2],[ 2,-1]],
+};
+
+// Standard (guideline) scoring. Every value is multiplied by the current level.
+const LINE_PTS   = [0, 100, 300, 500, 800];          // single, double, triple, quad
+const TSPIN_PTS  = { full: [400, 800, 1200, 1600],   // T-spin with 0..3 lines
+                     mini: [100, 200, 400] };        // mini T-spin with 0..2 lines
+const PERFECT_PTS = [0, 800, 1200, 1800, 2000];      // board fully cleared
+const B2B_PERFECT_QUAD = 3200;
+// T piece: the two corners on the side it points to, per rotation state
+const T_FRONT = [[[0,0],[0,2]], [[0,2],[2,2]], [[2,0],[2,2]], [[0,0],[2,0]]];
 
 // ============================================================
 //  CANVAS / SCALING
@@ -355,9 +385,10 @@ function drawPreview(id, cx, cy, size, alpha = 1) {
 // ============================================================
 //  GAME STATE
 // ============================================================
-let scene = "title";               // title | controls | credits | game
+let scene = "title";               // title | controls | scoring | credits | game
 let board, bag, queue, cur, hold, holdUsed;
-let score, lines, level, combo;
+let score, shownScore, lines, level, combo, b2b;
+let lastRotate = false, lastKick = 0, pendingSpin = null;
 let phase, phaseT, paused;         // phase: ready | play | clear | over
 let dropT, lockT, lockResets, lowestRow;
 let clearRows, msg, newBest, shakeT = 0;
@@ -372,6 +403,7 @@ const menus = {
   title: { sel: 0, items: [
     ["SINGLE",   () => startGame()],
     ["CONTROLS", () => { scene = "controls"; }],
+    ["SCORING",  () => { scene = "scoring"; }],
     ["CREDITS",  () => { scene = "credits"; }],
   ] },
   pause: { sel: 0, items: [
@@ -410,7 +442,8 @@ function startGame() {
   bag = []; queue = [];
   while (queue.length < 4) queue.push(nextFromBag());
   cur = null; hold = null; holdUsed = false;
-  score = 0; lines = 0; level = 1; combo = -1;
+  score = 0; shownScore = 0; lines = 0; level = 1; combo = -1; b2b = false;
+  lastRotate = false; pendingSpin = null;
   phase = "ready"; phaseT = 0; paused = false;
   clearRows = []; msg = null; newBest = false;
   scene = "game";
@@ -435,7 +468,7 @@ const onGround = () => !curFits(1, 0);
 
 function makePiece(id) { return { id, rot: 0, row: SHAPES[id].row, col: SHAPES[id].col }; }
 
-function resetPieceTimers() { dropT = 0; lockT = 0; lockResets = 0; lowestRow = cur.row; }
+function resetPieceTimers() { dropT = 0; lockT = 0; lockResets = 0; lowestRow = cur.row; lastRotate = false; }
 
 function spawn() {
   cur = makePiece(queue.shift());
@@ -452,6 +485,7 @@ function afterManipulate() {
 function shift(dc) {
   if (!curFits(0, dc)) return false;
   cur.col += dc;
+  lastRotate = false;
   afterManipulate();
   return true;
 }
@@ -461,6 +495,7 @@ function moveDown() {
   cur.row++;
   if (cur.row > lowestRow) { lowestRow = cur.row; lockResets = 0; }
   lockT = 0;
+  lastRotate = false;
   return true;
 }
 
@@ -468,13 +503,31 @@ function rotate(dir) {
   const n = SHAPES[cur.id].cells.length;
   if (n === 1) return;
   const nr = (cur.rot + dir + n) % n;
-  for (const [dr, dc] of KICKS) {
-    if (curFits(dr, dc, nr)) {
-      cur.rot = nr; cur.row += dr; cur.col += dc;
+  const tests = (cur.id === 3 ? KICKS_I : KICKS_JLSTZ)[cur.rot + ">" + nr];
+  for (let i = 0; i < tests.length; i++) {
+    const [x, y] = tests[i];
+    if (curFits(-y, x, nr)) {
+      cur.rot = nr; cur.row -= y; cur.col += x;
+      lastRotate = true; lastKick = i;
       afterManipulate();
       return;
     }
   }
+}
+
+// 3-corner rule: a T that locks right after rotating, with 3 of its 4
+// diagonal corners blocked, is a T-spin. Both "front" corners blocked (or the
+// last-resort kick used) = full T-spin, otherwise a mini T-spin.
+function detectTSpin() {
+  if (cur.id !== 6 || !lastRotate) return null;
+  const blocked = ([r, c]) => {
+    const R = cur.row + r, C = cur.col + c;
+    if (C < 0 || C >= COLS || R >= ROWS) return true;
+    return R >= 0 && !!board[R][C];
+  };
+  const corners = [[0,0],[0,2],[2,0],[2,2]].filter(blocked).length;
+  if (corners < 3) return null;
+  return T_FRONT[cur.rot].every(blocked) || lastKick === 4 ? "full" : "mini";
 }
 
 function ghostRow() {
@@ -486,6 +539,7 @@ function ghostRow() {
 function hardDrop() {
   const g = ghostRow();
   score += 2 * (g - cur.row);
+  if (g > cur.row) lastRotate = false;
   cur.row = g;
   shakeT = 110;
   lock();
@@ -507,6 +561,7 @@ function doHold() {
 }
 
 function lock() {
+  const spin = detectTSpin();
   let toppedOut = false;
   for (const [dr, dc] of SHAPES[cur.id].cells[cur.rot]) {
     const r = cur.row + dr, c = cur.col + dc;
@@ -517,28 +572,59 @@ function lock() {
   const full = [];
   for (let r = 0; r < ROWS; r++) if (board[r].every(v => v)) full.push(r);
   if (full.length) {
-    clearRows = full; phase = "clear"; phaseT = 0;
+    clearRows = full; pendingSpin = spin; phase = "clear"; phaseT = 0;
   } else {
     combo = -1;
+    if (spin) {
+      // T-spin with no lines: scores, but doesn't start or break back-to-back
+      const pts = TSPIN_PTS[spin][0] * level;
+      score += pts;
+      msg = { lines: (spin === "mini" ? ["MINI"] : []).concat(["T-SPIN", "+" + pts]), lvUp: false, t: 0 };
+    }
     spawn();
   }
 }
 
 function finishClear() {
   const n = clearRows.length;
+  const spin = pendingSpin;
   board = board.filter((_, r) => !clearRows.includes(r));
   while (board.length < ROWS) board.unshift(Array(COLS).fill(0));
+
+  // base points for the clear
+  let base = spin ? (TSPIN_PTS[spin][n] ?? TSPIN_PTS.full[n]) : LINE_PTS[n];
+
+  // back-to-back: consecutive "difficult" clears (quads or T-spins) earn x1.5
+  const difficult = n === 4 || !!spin;
+  const isB2B = difficult && b2b;
+  if (isB2B) base = Math.floor(base * 1.5);
+  b2b = difficult;
+
+  // combo: each consecutive clearing piece adds 50 x combo
   combo++;
-  let pts = [0, 100, 300, 500, 800][n] * level;
+  let pts = base * level;
   if (combo > 0) pts += 50 * combo * level;
+
+  // perfect clear: nothing left on the board
+  const perfect = board.every(row => row.every(v => !v));
+  if (perfect) pts += (n === 4 && isB2B ? B2B_PERFECT_QUAD : PERFECT_PTS[n]) * level;
+
   const oldLevel = level;
   score += pts;
   lines += n;
   level = 1 + Math.floor(lines / 10);
-  msg = {
-    lines: [["", "SINGLE", "DOUBLE", "TRIPLE", "QUAD!"][n], "+" + pts].concat(combo > 0 ? ["COMBO " + combo] : []),
-    lvUp: level > oldLevel, t: 0,
-  };
+
+  const label = [];
+  if (spin === "mini") label.push("MINI");
+  if (spin) label.push("T-SPIN");
+  label.push(["", "SINGLE", "DOUBLE", "TRIPLE", "QUAD!"][n]);
+  if (isB2B) label.push("B2B");
+  if (perfect) label.push("PERFECT");
+  label.push("+" + pts);
+  if (combo > 0) label.push("COMBO " + combo);
+  msg = { lines: label, lvUp: level > oldLevel, t: 0 };
+
+  pendingSpin = null;
   clearRows = [];
   phase = "play"; phaseT = 0;
   spawn();
@@ -560,7 +646,10 @@ function update(dt) {
   if (shakeT > 0) shakeT -= dt;
   if (scene !== "game" || paused) return;
   phaseT += dt;
-  if (msg) { msg.t += dt; if (msg.t > 1800) msg = null; }
+  if (msg) { msg.t += dt; if (msg.t > 2000) msg = null; }
+  // score display counts up quickly instead of jumping
+  if (shownScore < score) shownScore = Math.min(score, shownScore + Math.max(1, Math.ceil((score - shownScore) * dt / 90)));
+  else shownScore = score;
 
   if (phase === "ready" && phaseT >= 1200) { phase = "play"; phaseT = 0; spawn(); }
   else if (phase === "clear" && phaseT >= 320) finishClear();
@@ -655,7 +744,7 @@ document.addEventListener("keydown", e => {
     else if ((k === "Escape" || k === "p") && menu.back) menu.back();
     return;
   }
-  if (scene === "controls" || scene === "credits") {
+  if (scene === "controls" || scene === "scoring" || scene === "credits") {
     if (["Escape", "Enter", " ", "Backspace"].includes(k)) goTitle();
     return;
   }
@@ -680,7 +769,7 @@ canvas.addEventListener("pointerdown", e => {
   const r = canvas.getBoundingClientRect();
   const x = (e.clientX - r.left) / r.width * W;
   const y = (e.clientY - r.top) / r.height * H;
-  if (scene === "controls" || scene === "credits") { goTitle(); return; }
+  if (scene === "controls" || scene === "scoring" || scene === "credits") { goTitle(); return; }
   for (const h of hits) {
     if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) { h.fn(); return; }
   }
@@ -817,21 +906,23 @@ function drawTitle() {
     ctx.drawImage(SPR[10][flash && r >= 4 ? 9 : 3], wx + 40, wy + r * 10);
   }
 
-  drawMenu(menus.title, 128, 148, 14);
+  drawMenu(menus.title, 128, 143, 12);
   text("HI " + String(hi).padStart(6, "0"), 128, 194, "#8ab4ff", "center");
   if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, 206, "#4f62b0", "center");
 }
 
-function drawInfoScreen(title, rows, twoCol) {
+function drawInfoScreen(title, rows, twoCol, gap = 16, top = 42) {
   drawStars(titleStars, 0, 0, "#7fd0ff");
   drawScreenFrame();
-  text(title, 128, 16, "#ffd860", "center");
-  dottedLine(24, 30, 208);
+  text(title, 128, 12, "#ffd860", "center");
+  dottedLine(24, 24, 208);
   rows.forEach((row, i) => {
-    const y = 42 + i * 16;
-    if (twoCol) {
+    const y = top + i * gap;
+    if (twoCol && row.length === 1) {
+      text(row[0], 128, y, "#ffd860", "center");
+    } else if (twoCol) {
       text(row[0], 20, y, "#9ec0ff");
-      text(row[1], 120, y, "#ffffff");
+      text(row[1], 236, y, "#ffffff", "right");
     } else {
       text(row.replace(/^-/, ""), 128, y, row.startsWith("-") ? "#9ec0ff" : "#ffffff", "center");
     }
@@ -856,6 +947,21 @@ const TOUCH_CONTROLS = [
   ["FLICK UP", "HOLD"],
   ["II BUTTON", "PAUSE"],
   ["OR USE THE", "BUTTONS"],
+];
+const SCORING = [
+  ["SINGLE", "100"],
+  ["DOUBLE", "300"],
+  ["TRIPLE", "500"],
+  ["QUAD", "800"],
+  ["T-SPIN", "400"],
+  ["T-SPIN SINGLE", "800"],
+  ["T-SPIN DOUBLE", "1200"],
+  ["T-SPIN TRIPLE", "1600"],
+  ["BACK-TO-BACK", "X1.5"],
+  ["COMBO", "+50 EACH"],
+  ["PERFECT CLEAR", "+800-3200"],
+  ["SOFT/HARD DROP", "1/2 PER ROW"],
+  ["ALL POINTS X LEVEL"],
 ];
 const CREDITS = [
   GAME_TITLE,
@@ -954,9 +1060,12 @@ function drawGame() {
 
   if (msg && !paused) {
     msg.lines.forEach((line, i) => {
-      text(line, 35, 116 + i * 12, i === 0 ? "#ffd860" : "#ffffff", "center");
+      const color = line.startsWith("+") ? "#ffffff"
+        : line.startsWith("COMBO") ? "#ff9ad0"
+        : line === "B2B" || line === "PERFECT" ? "#5cf0e0" : "#ffd860";
+      text(line, 35, 108 + i * 12, color, "center");
     });
-    if (msg.lvUp && blink(150)) text("LV UP!", 35, 160, "#5cf08c", "center");
+    if (msg.lvUp && blink(150)) text("LV UP!", 35, 112 + msg.lines.length * 12, "#5cf08c", "center");
   }
   if (!isTouch) text("P:PAUSE", 35, 206, "#3a4c98", "center", 8, null);
 
@@ -976,7 +1085,7 @@ function drawGame() {
   text("LEVEL", RX + 2, 152, "#9ec0ff");
   text(String(level), RX + 57, 164, "#ffffff", "right");
   text("SCORE", RX + 2, 180, "#9ec0ff");
-  text(String(score), RX + 57, 192, "#ffffff", "right");
+  text(String(shownScore), RX + 57, 192, "#ffffff", "right");
 
   // ---- overlays on the playfield
   if (paused) {
@@ -1004,6 +1113,7 @@ function render() {
   rect(0, 0, W, H, "#000");
   if (scene === "title") drawTitle();
   else if (scene === "controls") drawInfoScreen("CONTROLS", isTouch ? TOUCH_CONTROLS : CONTROLS, true);
+  else if (scene === "scoring") drawInfoScreen("SCORING", SCORING, true, 12, 30);
   else if (scene === "credits") drawInfoScreen("CREDITS", CREDITS, false);
   else drawGame();
 }
