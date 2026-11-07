@@ -347,9 +347,17 @@ function drawPillar(x) {
 function triRight(x, y, color) { for (let i = 0; i < 4; i++) rect(x + i, y + i, 1, 7 - 2 * i, color); }
 function triLeft(x, y, color)  { for (let i = 0; i < 4; i++) rect(x + 3 - i, y + i, 1, 7 - 2 * i, color); }
 
+function chooseMenu(menu, i) {
+  menu.sel = i;
+  const item = menu.items[i];
+  if (!item[2]) Sound.play("select");   // items marked silent play their own sound
+  item[1]();
+}
+
 function drawMenu(menu, cx, y, gap) {
   ctx.font = `8px ${FONT}`;
-  menu.items.forEach(([label, fn], i) => {
+  menu.items.forEach(([lbl], i) => {
+    const label = typeof lbl === "function" ? lbl() : lbl;
     const yy = y + i * gap;
     const sel = i === menu.sel;
     text(label, cx, yy, sel ? "#ffffff" : "#7f95e0", "center");
@@ -360,7 +368,7 @@ function drawMenu(menu, cx, y, gap) {
       triRight(Math.round(cx - w / 2) - 10 - off, yy, "#ff5aa8");
       triLeft(Math.round(cx + w / 2) + 6 + off, yy, "#ff5aa8");
     }
-    hits.push({ x: cx - w / 2 - 14, y: yy - 3, w: w + 28, h: gap, fn: () => { menu.sel = i; fn(); } });
+    hits.push({ x: cx - w / 2 - 14, y: yy - 3, w: w + 28, h: gap, fn: () => chooseMenu(menu, i) });
   });
 }
 
@@ -383,6 +391,165 @@ function drawPreview(id, cx, cy, size, alpha = 1) {
 }
 
 // ============================================================
+//  SOUND  (all sounds are synthesized live, no audio files)
+// ============================================================
+const midi = m => 440 * Math.pow(2, (m - 69) / 12);
+
+// Original chiptune loop: 8 bars of eighth notes (0 = rest)
+const MELODY = [
+  76,0,79,81, 83,0,81,79,   78,0,74,76, 78,0,0,0,
+  76,0,79,81, 83,0,86,83,   81,79,78,74, 76,0,0,0,
+  84,0,83,81, 79,0,81,83,   81,0,78,79, 81,0,0,0,
+  79,0,78,76, 74,0,76,78,   76,0,0,71, 76,0,0,0,
+];
+const BASS_ROOTS = [40, 38, 40, 38, 36, 38, 36, 35];   // E D E D C D C B
+
+const Sound = {
+  ctx: null, master: null, sfx: null, music: null, noiseBuf: null,
+  mode: "all",                       // all | sfx | off
+  musicOn: false, step: 0, nextTime: 0, timer: null,
+
+  load() {
+    try { const m = localStorage.getItem("stackfall-sound"); if (["all", "sfx", "off"].includes(m)) this.mode = m; } catch (e) {}
+  },
+  save() { try { localStorage.setItem("stackfall-sound", this.mode); } catch (e) {} },
+
+  // Browsers only allow audio after a tap/click/key press
+  unlock() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.5;
+      this.master.connect(this.ctx.destination);
+      this.sfx = this.ctx.createGain();
+      this.sfx.connect(this.master);
+      this.music = this.ctx.createGain();
+      this.music.connect(this.master);
+      const len = this.ctx.sampleRate * 0.5;
+      this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      this.apply();
+    }
+    if (this.ctx.state === "suspended") this.ctx.resume();
+  },
+
+  apply() {
+    if (!this.ctx) return;
+    this.sfx.gain.value = this.mode === "off" ? 0 : 1;
+    this.music.gain.value = this.mode === "all" ? 0.3 : 0;
+  },
+
+  cycle() {
+    this.mode = { all: "sfx", sfx: "off", off: "all" }[this.mode];
+    this.save();
+    this.unlock();
+    this.apply();
+    this.play("select");
+  },
+
+  label() { return { all: "ON", sfx: "SFX ONLY", off: "OFF" }[this.mode]; },
+
+  tone(freq, dur, { type = "square", vol = 0.15, slide = 0, at = 0, out = this.sfx } = {}) {
+    const c = this.ctx, t = at || c.currentTime;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(out);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  },
+
+  noise(dur, { vol = 0.2, at = 0, freq = 1200, out = this.sfx } = {}) {
+    const c = this.ctx, t = at || c.currentTime;
+    const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    s.buffer = this.noiseBuf;
+    f.type = "lowpass"; f.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f).connect(g).connect(out);
+    s.start(t);
+    s.stop(t + dur + 0.02);
+  },
+
+  arp(notes, gap, opts = {}) {
+    const t = this.ctx.currentTime;
+    notes.forEach((m, i) => this.tone(midi(m), opts.dur || gap * 1.6, { ...opts, at: t + i * gap }));
+  },
+
+  play(name, arg = 0) {
+    if (!this.ctx || this.mode === "off") return;
+    switch (name) {
+      case "move":   this.tone(200, 0.03, { vol: 0.05 }); break;
+      case "rotate": this.tone(520, 0.05, { vol: 0.07, slide: 780 }); break;
+      case "hold":   this.tone(300, 0.12, { type: "triangle", vol: 0.2, slide: 900 }); break;
+      case "lock":   this.tone(120, 0.06, { vol: 0.08 }); this.noise(0.03, { vol: 0.08, freq: 800 }); break;
+      case "drop":   this.tone(170, 0.16, { type: "sine", vol: 0.45, slide: 40 }); this.noise(0.08, { vol: 0.2, freq: 600 }); break;
+      case "clear": {                      // arg = rows cleared
+        const runs = { 1: [72, 76, 79], 2: [72, 76, 79, 84], 3: [72, 76, 79, 84, 88],
+                       4: [72, 76, 79, 84, 88, 91, 96] };
+        this.arp(runs[arg] || runs[1], arg === 4 ? 0.05 : 0.055, { vol: 0.12 });
+        if (arg === 4) this.arp([84, 88, 91], 0.0, { type: "triangle", vol: 0.12, dur: 0.5 });
+        break;
+      }
+      case "tspin":  this.arp([88, 91, 95, 100], 0.04, { type: "triangle", vol: 0.15 }); break;
+      case "combo":  this.arp([72 + arg * 2, 79 + arg * 2], 0.06, { vol: 0.1 }); break;
+      case "levelup":this.arp([79, 84, 88, 91, 96], 0.07, { type: "triangle", vol: 0.2 }); break;
+      case "perfect":this.arp([84, 88, 91, 96, 91, 96, 100, 103], 0.06, { type: "triangle", vol: 0.2 }); break;
+      case "ready":  this.tone(440, 0.09, { vol: 0.1 }); break;
+      case "go":     this.tone(880, 0.18, { vol: 0.12 }); break;
+      case "pause":  this.arp([81, 76], 0.08, { vol: 0.1 }); break;
+      case "menu":   this.tone(880, 0.03, { vol: 0.06 }); break;
+      case "select": this.tone(660, 0.08, { vol: 0.1, slide: 990 }); break;
+      case "gameover": this.arp([76, 72, 69, 65, 64], 0.18, { type: "triangle", vol: 0.25, dur: 0.3 }); break;
+    }
+  },
+
+  // ---- music sequencer ----
+  bpm() { return 132 + Math.min((level || 1) - 1, 10) * 4; },
+
+  syncMusic(want) {
+    want = want && this.ctx && this.mode === "all";
+    if (want && !this.musicOn) {
+      this.musicOn = true;
+      this.nextTime = this.ctx.currentTime + 0.08;
+      this.timer = setInterval(() => this.schedule(), 25);
+    } else if (!want && this.musicOn) {
+      this.musicOn = false;
+      clearInterval(this.timer);
+    }
+  },
+
+  resetMusic() { this.step = 0; },
+
+  schedule() {
+    const c = this.ctx;
+    if (this.nextTime < c.currentTime - 0.1) this.nextTime = c.currentTime + 0.05;   // tab was asleep
+    const eighth = 60 / this.bpm() / 2;
+    while (this.nextTime < c.currentTime + 0.15) {
+      const s = this.step, t = this.nextTime, out = this.music;
+      const note = MELODY[s];
+      if (note) this.tone(midi(note), eighth * 0.9, { vol: 0.13, at: t, out, type: "square" });
+      const root = BASS_ROOTS[Math.floor(s / 8)];
+      this.tone(midi(s % 2 ? root + 12 : root), eighth * 0.8, { type: "triangle", vol: 0.3, at: t, out });
+      if (s % 4 === 0) this.tone(150, 0.1, { type: "sine", vol: 0.35, slide: 45, at: t, out });   // kick
+      if (s % 2 === 1) this.noise(0.03, { vol: 0.05, at: t, freq: 7000, out });                  // hat
+      this.nextTime += eighth;
+      this.step = (s + 1) % MELODY.length;
+    }
+  },
+};
+Sound.load();
+["pointerdown", "touchend", "keydown"].forEach(ev =>
+  window.addEventListener(ev, () => Sound.unlock(), { capture: true, passive: true }));
+
+// ============================================================
 //  GAME STATE
 // ============================================================
 let scene = "title";               // title | controls | scoring | credits | game
@@ -391,7 +558,7 @@ let score, shownScore, lines, level, combo, b2b;
 let lastRotate = false, lastKick = 0, pendingSpin = null;
 let phase, phaseT, paused;         // phase: ready | play | clear | over
 let dropT, lockT, lockResets, lowestRow;
-let clearRows, msg, newBest, shakeT = 0;
+let clearRows, msg, newBest, shakeT = 0, toast = null;
 const held = { left: false, right: false, down: false };
 let hDir = 0, dasT = 0, arrT = 0;
 
@@ -404,10 +571,12 @@ const menus = {
     ["SINGLE",   () => startGame()],
     ["CONTROLS", () => { scene = "controls"; }],
     ["SCORING",  () => { scene = "scoring"; }],
+    [() => "SOUND: " + Sound.label(), () => Sound.cycle(), true],
     ["CREDITS",  () => { scene = "credits"; }],
   ] },
   pause: { sel: 0, items: [
     ["RESUME", () => { paused = false; }],
+    [() => ({ all: "SOUND ON", sfx: "SFX ONLY", off: "MUTED" })[Sound.mode], () => Sound.cycle(), true],
     ["QUIT",   () => goTitle()],
   ], back: () => { paused = false; } },
   over: { sel: 0, items: [
@@ -443,6 +612,7 @@ function startGame() {
   while (queue.length < 4) queue.push(nextFromBag());
   cur = null; hold = null; holdUsed = false;
   score = 0; shownScore = 0; lines = 0; level = 1; combo = -1; b2b = false;
+  Sound.resetMusic();
   lastRotate = false; pendingSpin = null;
   phase = "ready"; phaseT = 0; paused = false;
   clearRows = []; msg = null; newBest = false;
@@ -487,6 +657,7 @@ function shift(dc) {
   cur.col += dc;
   lastRotate = false;
   afterManipulate();
+  Sound.play("move");
   return true;
 }
 
@@ -510,6 +681,7 @@ function rotate(dir) {
       cur.rot = nr; cur.row -= y; cur.col += x;
       lastRotate = true; lastKick = i;
       afterManipulate();
+      Sound.play("rotate");
       return;
     }
   }
@@ -541,7 +713,8 @@ function hardDrop() {
   if (g > cur.row) lastRotate = false;
   cur.row = g;
   shakeT = 110;
-  lock();
+  Sound.play("drop");
+  lock(true);
 }
 
 function doHold() {
@@ -557,10 +730,12 @@ function doHold() {
     spawn();
   }
   holdUsed = true;
+  Sound.play("hold");
 }
 
-function lock() {
+function lock(fromHardDrop = false) {
   const spin = detectTSpin();
+  if (!fromHardDrop) Sound.play("lock");
   let toppedOut = false;
   for (const [dr, dc] of SHAPES[cur.id].cells[cur.rot]) {
     const r = cur.row + dr, c = cur.col + dc;
@@ -572,6 +747,8 @@ function lock() {
   for (let r = 0; r < ROWS; r++) if (board[r].every(v => v)) full.push(r);
   if (full.length) {
     clearRows = full; pendingSpin = spin; phase = "clear"; phaseT = 0;
+    if (spin) Sound.play("tspin");
+    Sound.play("clear", full.length);
   } else {
     // no rows cleared = no points (this also covers T-spins that clear nothing)
     combo = -1;
@@ -617,6 +794,9 @@ function finishClear() {
   label.push("+" + pts);
   if (combo > 0) label.push("COMBO " + combo);
   msg = { lines: label, lvUp: level > oldLevel, t: 0 };
+  if (perfect) Sound.play("perfect");
+  else if (level > oldLevel) Sound.play("levelup");
+  else if (combo > 0) Sound.play("combo", Math.min(combo, 8));
 
   pendingSpin = null;
   clearRows = [];
@@ -629,6 +809,8 @@ function gameOver() {
   menus.over.sel = 0;
   if (score > hi) { hi = score; newBest = true; saveHi(); }
   clearHeld();
+  Sound.syncMusic(false);
+  Sound.play("gameover");
 }
 
 // ============================================================
@@ -638,13 +820,18 @@ const OVER_MENU_DELAY = ROWS * 35 + 250;
 
 function update(dt) {
   if (shakeT > 0) shakeT -= dt;
+  if (toast) { toast.t += dt; if (toast.t > 1400) toast = null; }
+  Sound.syncMusic(scene === "game" && !paused && phase !== "over");
   if (scene !== "game" || paused) return;
+  // READY / GO beeps
+  if (phase === "ready" && phaseT === 0) Sound.play("ready");
   phaseT += dt;
   if (msg) { msg.t += dt; if (msg.t > 2000) msg = null; }
   // score display counts up quickly instead of jumping
   if (shownScore < score) shownScore = Math.min(score, shownScore + Math.max(1, Math.ceil((score - shownScore) * dt / 90)));
   else shownScore = score;
 
+  if (phase === "ready" && phaseT >= 800 && phaseT - dt < 800) Sound.play("go");
   if (phase === "ready" && phaseT >= 1200) { phase = "play"; phaseT = 0; spawn(); }
   else if (phase === "clear" && phaseT >= 320) finishClear();
   else if (phase === "play") stepPlay(dt);
@@ -698,7 +885,7 @@ function activeMenu() {
 function press(a) {
   if (scene !== "game") return;
   if (a === "pause") {
-    if (phase !== "over") { paused = !paused; menus.pause.sel = 0; clearHeld(); }
+    if (phase !== "over") { paused = !paused; menus.pause.sel = 0; clearHeld(); Sound.play("pause"); }
     return;
   }
   if (paused) return;
@@ -728,17 +915,19 @@ document.addEventListener("keydown", e => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " "].includes(k)) e.preventDefault();
   if (e.repeat) return;
 
+  if (k === "m") { Sound.cycle(); toast = { t: 0 }; return; }
+
   const menu = activeMenu();
   if (menu) {
     const n = menu.items.length;
-    if (k === "ArrowUp" || k === "w") menu.sel = (menu.sel + n - 1) % n;
-    else if (k === "ArrowDown" || k === "s") menu.sel = (menu.sel + 1) % n;
-    else if (k === "Enter" || k === " ") menu.items[menu.sel][1]();
-    else if ((k === "Escape" || k === "p") && menu.back) menu.back();
+    if (k === "ArrowUp" || k === "w") { menu.sel = (menu.sel + n - 1) % n; Sound.play("menu"); }
+    else if (k === "ArrowDown" || k === "s") { menu.sel = (menu.sel + 1) % n; Sound.play("menu"); }
+    else if (k === "Enter" || k === " ") chooseMenu(menu, menu.sel);
+    else if ((k === "Escape" || k === "p") && menu.back) { Sound.play("pause"); menu.back(); }
     return;
   }
   if (scene === "controls" || scene === "scoring" || scene === "credits") {
-    if (["Escape", "Enter", " ", "Backspace"].includes(k)) goTitle();
+    if (["Escape", "Enter", " ", "Backspace"].includes(k)) { Sound.play("menu"); goTitle(); }
     return;
   }
   if (KEYMAP[k]) press(KEYMAP[k]);
@@ -899,9 +1088,9 @@ function drawTitle() {
     ctx.drawImage(SPR[10][flash && r >= 4 ? 9 : 3], wx + 40, wy + r * 10);
   }
 
-  drawMenu(menus.title, 128, 143, 12);
-  text("HI " + String(hi).padStart(6, "0"), 128, 194, "#8ab4ff", "center");
-  if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, 206, "#4f62b0", "center");
+  drawMenu(menus.title, 128, 140, 11);
+  text("HI " + String(hi).padStart(6, "0"), 128, 197, "#8ab4ff", "center");
+  if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, 209, "#4f62b0", "center");
 }
 
 function drawInfoScreen(title, rows, twoCol, gap = 16, top = 42) {
@@ -931,6 +1120,7 @@ const CONTROLS = [
   ["Z / CTRL", "ROTATE BACK"],
   ["C / SHIFT", "HOLD"],
   ["P / ESC", "PAUSE"],
+  ["M", "SOUND"],
 ];
 const TOUCH_CONTROLS = [
   ["TAP", "ROTATE"],
@@ -938,7 +1128,7 @@ const TOUCH_CONTROLS = [
   ["DRAG DOWN", "SOFT DROP"],
   ["FLICK DOWN", "HARD DROP"],
   ["FLICK UP", "HOLD"],
-  ["II BUTTON", "PAUSE"],
+  ["II BUTTON", "PAUSE & SOUND"],
   ["OR USE THE", "BUTTONS"],
 ];
 const SCORING = [
@@ -1060,7 +1250,8 @@ function drawGame() {
     });
     if (msg.lvUp && blink(150)) text("LV UP!", 35, 112 + msg.lines.length * 12, "#5cf08c", "center");
   }
-  if (!isTouch) text("P:PAUSE", 35, 206, "#3a4c98", "center", 8, null);
+  if (toast) { text("SOUND", 35, 194, "#9ec0ff", "center"); text(Sound.label(), 35, 206, "#ffd860", "center"); }
+  else if (!isTouch) text("P:PAUSE", 35, 206, "#3a4c98", "center", 8, null);
 
   // ---- right panel
   const RX = 192;
@@ -1082,7 +1273,7 @@ function drawGame() {
 
   // ---- overlays on the playfield
   if (paused) {
-    overlayPanel(72, 66);
+    overlayPanel(72, 80);
     if (blink(500)) text("PAUSE", cx, 82, "#ffd860", "center");
     drawMenu(menus.pause, cx, 104, 14);
   } else if (phase === "ready") {
