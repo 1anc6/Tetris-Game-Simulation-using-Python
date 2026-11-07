@@ -617,8 +617,8 @@ const Sound = {
       case "clear": {                      // arg = rows cleared
         const runs = { 1: [72, 76, 79], 2: [72, 76, 79, 84], 3: [72, 76, 79, 84, 88],
                        4: [72, 76, 79, 84, 88, 91, 96] };
-        this.arp(runs[arg] || runs[1], arg === 4 ? 0.05 : 0.055, { vol: 0.12 });
-        if (arg === 4) this.arp([84, 88, 91], 0.0, { type: "triangle", vol: 0.12, dur: 0.5 });
+        this.arp(runs[Math.min(arg, 4)] || runs[1], arg >= 4 ? 0.05 : 0.055, { vol: 0.12 });
+        if (arg >= 4) this.arp([84, 88, 91], 0.0, { type: "triangle", vol: 0.12, dur: 0.5 });
         break;
       }
       case "tspin":  this.arp([88, 91, 95, 100], 0.04, { type: "triangle", vol: 0.15 }); break;
@@ -750,6 +750,53 @@ const menus = {
     ["MENU",  () => goTitle()],
   ], back: () => goTitle() },
 };
+
+// ---- install as an app ----
+// Chrome/Edge/Android fire "beforeinstallprompt" when the game can be installed; iPhones and iPads
+// have no prompt, so there the menu item opens a short how-to screen instead.
+let installEvt = null;
+const isStandalone = () =>
+  window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const INSTALL_HELP = [
+  "-ADD IT TO YOUR HOME SCREEN",
+  "",
+  "1. TAP THE SHARE BUTTON",
+  "2. CHOOSE ADD TO HOME SCREEN",
+  "3. TAP ADD",
+  "",
+  "-THEN PLAY IT FULL SCREEN",
+  "-AND OFFLINE",
+];
+// A touch only counts as a user gesture once the finger lifts, and menu rows react on press, so if
+// the browser refuses the prompt right away we retry on the next pointerup.
+let installPending = false;
+function runInstall() {
+  const ev = installEvt;
+  if (!ev) { installPending = false; return; }
+  try {
+    const p = ev.prompt();
+    installPending = false;
+    ev.userChoice.then(() => { installEvt = null; syncInstallItem(); }, () => {});
+    if (p && p.catch) p.catch(() => {});
+  } catch (err) { installPending = true; }
+}
+document.addEventListener("pointerup", () => { if (installPending) runInstall(); });
+const installItem = ["INSTALL APP", () => {
+  if (installEvt) runInstall();
+  else scene = "install";
+}];
+function syncInstallItem() {
+  const items = menus.title.items;
+  const i = items.indexOf(installItem);
+  const want = !isStandalone() && (installEvt || isIOS);
+  if (want && i < 0) items.splice(items.length - 1, 0, installItem);        // just above CREDITS
+  else if (!want && i >= 0) { items.splice(i, 1); menus.title.sel = Math.min(menus.title.sel, items.length - 1); }
+}
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvt = e; syncInstallItem(); });
+window.addEventListener("appinstalled", () => { installEvt = null; syncInstallItem(); });
+syncInstallItem();
 
 function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); resize(); }
 
@@ -912,7 +959,7 @@ function fullRows() {
 function clearBanner(n, spin, ch) {
   if (ch > 0) return "CHAIN X" + (ch + 1);
   if (spin) return "T-SPIN";
-  return ["", "SINGLE!", "DOUBLE!", "TRIPLE!", "QUAD!"][n];
+  return ["", "SINGLE!", "DOUBLE!", "TRIPLE!", "QUAD!"][Math.min(n, 4)];
 }
 
 function addParticle(x, y, vx, vy, color) {
@@ -1067,6 +1114,7 @@ function lock(fromHardDrop = false) {
 
 function finishClear() {
   const n = clearRows.length;
+  const nk = Math.min(n, 4);          // a cascade can complete 5+ rows at once; score it as a quad
   const spin = pendingSpin;
   const cascade = cfg.gravity === "cascade";
   if (cascade) {
@@ -1077,12 +1125,12 @@ function finishClear() {
   }
 
   // base points for the clear
-  let base = spin ? (TSPIN_PTS[spin][n] ?? TSPIN_PTS.full[n]) : LINE_PTS[n];
+  let base = spin ? (TSPIN_PTS[spin][nk] ?? TSPIN_PTS.full[nk]) : LINE_PTS[nk];
 
   // back-to-back: consecutive "difficult" clears (quads or T-spins) earn x1.5.
   // Only the first clear of a cascade counts here; later links leave the streak alone.
   const first = chain === 0;
-  const difficult = n === 4 || !!spin;
+  const difficult = n >= 4 || !!spin;
   const isB2B = first && difficult && b2b;
   if (isB2B) base = Math.floor(base * 1.5);
   if (first) b2b = difficult;
@@ -1094,7 +1142,7 @@ function finishClear() {
 
   // perfect clear: nothing left on the board
   const perfect = board.every(row => row.every(v => !v));
-  if (perfect) pts += (n === 4 && isB2B ? B2B_PERFECT_QUAD : PERFECT_PTS[n]) * level;
+  if (perfect) pts += (nk === 4 && isB2B ? B2B_PERFECT_QUAD : PERFECT_PTS[nk]) * level;
 
   const oldLevel = level;
   score += pts;
@@ -1104,7 +1152,7 @@ function finishClear() {
   const label = [];
   if (spin === "mini") label.push("MINI");
   if (spin) label.push("T-SPIN");
-  label.push(["", "SINGLE", "DOUBLE", "TRIPLE", "QUAD!"][n]);
+  label.push(["", "SINGLE", "DOUBLE", "TRIPLE", "QUAD!"][nk]);
   if (chain > 0) label.push("CHAIN X" + (chain + 1));
   if (isB2B) label.push("B2B");
   if (perfect) label.push("PERFECT");
@@ -1257,7 +1305,7 @@ document.addEventListener("keydown", e => {
     else if ((k === "Escape" || k === "p") && menu.back) { Sound.play("pause"); menu.back(); }
     return;
   }
-  if (scene === "controls" || scene === "scoring" || scene === "credits") {
+  if (scene === "controls" || scene === "scoring" || scene === "credits" || scene === "install") {
     if (["Escape", "Enter", " ", "Backspace"].includes(k)) { Sound.play("menu"); goTitle(); }
     return;
   }
@@ -1289,7 +1337,7 @@ canvas.addEventListener("pointerdown", e => {
   const r = canvas.getBoundingClientRect();
   const x = (e.clientX - r.left) / r.width * W;
   const y = (e.clientY - r.top) / r.height * H;
-  if (scene === "controls" || scene === "scoring" || scene === "credits") { goTitle(); return; }
+  if (scene === "controls" || scene === "scoring" || scene === "credits" || scene === "install") { goTitle(); return; }
   for (const h of hits) {
     if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) { h.fn(); return; }
   }
@@ -1426,9 +1474,10 @@ function drawTitle() {
     ctx.drawImage(SPR[10][flash && r >= 4 ? 9 : 3], wx + 40, wy + r * 10);
   }
 
-  drawMenu(menus.title, 128, 140, 11);
-  text("HI " + String(hi).padStart(6, "0"), 128, 197, "#8ab4ff", "center");
-  if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, 209, "#4f62b0", "center");
+  const many = menus.title.items.length > 5;          // an INSTALL APP row is showing
+  drawMenu(menus.title, 128, many ? 136 : 140, many ? 10 : 11);
+  text("HI " + String(hi).padStart(6, "0"), 128, many ? 199 : 197, "#8ab4ff", "center");
+  if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, many ? 211 : 209, "#4f62b0", "center");
 }
 
 function drawInfoScreen(title, rows, twoCol, gap = 16, top = 42) {
@@ -1766,6 +1815,7 @@ function render() {
   else if (scene === "controls") drawInfoScreen("CONTROLS", isTouch ? TOUCH_CONTROLS : controlRows(), true);
   else if (scene === "scoring") drawInfoScreen("SCORING", SCORING, true, 12, 30);
   else if (scene === "credits") drawInfoScreen("CREDITS", CREDITS, false);
+  else if (scene === "install") drawInfoScreen("INSTALL APP", INSTALL_HELP, false, 14, 36);
   else drawGame();
 }
 
@@ -1774,8 +1824,14 @@ function loop(t) {
   const dt = Math.min(50, t - last);
   last = t;
   now = t;
-  update(dt);
-  render();
+  // never let one bad frame stop the game: log it and keep the loop running
+  try {
+    update(dt);
+    render();
+  } catch (err) {
+    console.error(err);
+    if (!Number.isFinite(score)) { score = 0; shownScore = 0; }
+  }
   requestAnimationFrame(loop);
 }
 

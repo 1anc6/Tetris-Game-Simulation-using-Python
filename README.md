@@ -25,7 +25,7 @@ modern rules, touch controls and chiptune sound.
 - **Sound**: synthesized chiptune sound effects and an original music loop, no audio files
 - **Menus**: title screen, controls, scoring and credits screens, pause menu and game over screen
 - **Settings**: sound and music volume, ghost piece on/off, reduced motion, auto-repeat speed (DAS/ARR) and remappable keys, all saved in the browser
-- **Installable and offline**: add it to your home screen or desktop and play without a connection
+- **Installable and offline**: an **Install app** row appears on the title screen (Android, Chrome and Edge install it with one tap; on iPhone and iPad it shows the Add to Home Screen steps). Once installed it plays full screen without a connection
 - **Saves your best score** in the browser
 
 ## Controls
