@@ -16,6 +16,8 @@ modern rules, touch controls and chiptune sound.
 
 - **Retro look**: pixel font, starfield background, LED-style playfield and chunky striped blocks
 - **Modern rules**: hold piece, 3-piece next queue, ghost piece, 7-bag randomizer, SRS rotation with wall kicks, lock delay
+- **Cascade clears**: after rows clear, the blocks above fall straight down into any gaps. If that completes more rows they clear too, as a chain that adds to your combo
+- **Effects**: halftone drop trail and sparks on a hard drop, landing flash, a sweeping clear banner and a sliding combo tag
 - **Levels**: every 10 lines raises the level and the falling speed
 - **Guideline scoring**: T-spins, back-to-back bonus, combos and perfect clears (see [Scoring](#scoring))
 - **Plays on phones**: on-screen buttons plus swipe gestures, in portrait and landscape
@@ -65,7 +67,8 @@ Open **Settings** from the title screen. Use ↑ ↓ to pick a row and ← → t
 | Sound | All sound, effects only, or off (same as the M key) |
 | Music / Effects vol | Volume from 0 to 10 |
 | Ghost piece | Show or hide the outline where the piece will land |
-| Motion | *Reduced* turns off screen shake, flashing and twinkling. It starts on *Reduced* if your device asks for reduced motion |
+| Motion | *Reduced* turns off screen shake, flashing, twinkling, the drop trail and sparks. It starts on *Reduced* if your device asks for reduced motion |
+| Line clear | *Cascade* lets blocks fall into gaps after a clear and can chain. *Classic* just shifts the rows down |
 | DAS | Delay in ms before a held left/right key starts repeating |
 | ARR | Delay in ms between repeats while held (*Instant* slides straight to the wall) |
 | Key bindings | Pick an action, press the new key. A key already used by another action is refused. Enter, Esc and M are reserved |
@@ -82,6 +85,7 @@ Every value below is multiplied by your current level.
 | Mini T-spin Single / Double | 200 / 400 |
 | Back-to-back (quads or T-spins in a row) | ×1.5 |
 | Combo (clearing with consecutive pieces) | +50 × combo count |
+| Cascade chain (rows completed by blocks falling after a clear) | ×2, ×3, … per link, and each link raises the combo |
 | Perfect clear (board left empty) | +800 to +3200 |
 
 A T-spin counts when the T piece's last move was a rotation and 3 of the 4 corners around its center are blocked.

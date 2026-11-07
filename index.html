@@ -227,11 +227,15 @@ if (window.ResizeObserver) new ResizeObserver(() => resize()).observe(document.d
 // ============================================================
 //  SPRITES
 // ============================================================
-function mix(hex, amt) {
+function mixRGB(hex, amt) {
   const n = parseInt(hex.slice(1), 16);
   const t = amt < 0 ? 0 : 255, p = Math.abs(amt);
   const ch = v => Math.round(v + (t - v) * p);
-  return `rgb(${ch(n >> 16)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+  return [ch(n >> 16), ch((n >> 8) & 255), ch(n & 255)];
+}
+function mix(hex, amt) {
+  const [r, g, b] = mixRGB(hex, amt);
+  return `rgb(${r},${g},${b})`;
 }
 
 function makeSprite(color, size) {
@@ -416,6 +420,7 @@ const DAS_OPTS = [80, 100, 120, 140, 160, 200, 240, 300];   // ms before a held 
 const ARR_OPTS = [0, 15, 30, 45, 60, 80, 100];              // ms between repeats (0 = instant)
 const VOL_OPTS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const MOTION_OPTS = ["full", "reduced"];
+const GRAVITY_OPTS = ["cascade", "classic"];
 const CFG_KEY = "stackfall-settings";
 // keys the game keeps for itself: Enter picks menu items, M mutes, Escape cancels
 const RESERVED_KEYS = ["Enter", "Escape", "m"];
@@ -440,6 +445,7 @@ function loadCfg() {
   const cfg = {
     ghost: true,
     motion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : "full",
+    gravity: "cascade",
     das: 160, arr: 45, music: 10, sfx: 10,
     keys: cloneKeys(DEFAULT_KEYS),
   };
@@ -447,6 +453,7 @@ function loadCfg() {
     const s = JSON.parse(localStorage.getItem(CFG_KEY) || "{}");
     if (typeof s.ghost === "boolean") cfg.ghost = s.ghost;
     if (MOTION_OPTS.includes(s.motion)) cfg.motion = s.motion;
+    if (GRAVITY_OPTS.includes(s.gravity)) cfg.gravity = s.gravity;
     if (DAS_OPTS.includes(s.das)) cfg.das = s.das;
     if (ARR_OPTS.includes(s.arr)) cfg.arr = s.arr;
     if (VOL_OPTS.includes(s.music)) cfg.music = s.music;
@@ -697,6 +704,7 @@ const menus = {
     optionRow("EFFECTS VOL", "sfx", VOL_OPTS, String, "SOUND EFFECTS VOLUME", () => Sound.apply()),
     optionRow("GHOST PIECE", "ghost", [true, false], onOff, "SHOW WHERE THE PIECE LANDS"),
     optionRow("MOTION", "motion", MOTION_OPTS, v => v.toUpperCase(), "REDUCED: NO SHAKE/FLASH"),
+    optionRow("LINE CLEAR", "gravity", GRAVITY_OPTS, v => v.toUpperCase(), "CASCADE: BLOCKS FILL GAPS"),
     optionRow("DAS", "das", DAS_OPTS, ms, "DELAY BEFORE KEY REPEATS"),
     optionRow("ARR", "arr", ARR_OPTS, ms, "REPEAT SPEED WHEN HELD"),
     ["KEY BINDINGS", () => { scene = "keys"; menus.keys.sel = 0; }, false, null, "CHANGE KEYBOARD CONTROLS"],
@@ -753,6 +761,8 @@ function startGame() {
   lastRotate = false; pendingSpin = null;
   phase = "ready"; phaseT = 0; paused = false;
   clearRows = []; msg = null; newBest = false;
+  fallCells = []; chain = 0; clearLabel = "";
+  particles = []; dropFx = null; lockFx = null; comboFx = null;
   scene = "game";
   clearHeld();
 }
@@ -846,12 +856,149 @@ function ghostRow() {
 }
 
 function hardDrop() {
-  const g = ghostRow();
+  const g = ghostRow(), from = cur.row;
   if (g > cur.row) lastRotate = false;
+  if (!reduced()) {
+    if (g > from) makeTrail(cur.id, cur.rot, cur.col, from, g);
+    spawnLandParticles(cur.id, cur.rot, cur.col, g);
+  }
   cur.row = g;
   shakeT = reduced() ? 0 : 110;
   Sound.play("drop");
   lock(true);
+}
+
+// ============================================================
+//  CASCADE + EFFECTS
+// ============================================================
+// Cascade: after rows clear, every block above falls straight down into any gap.
+// That can complete more rows, which clear in turn (a "chain" that also raises the combo).
+const FALL_BASE = 60, FALL_PER = 30;     // ms: a block falling d rows takes FALL_BASE + FALL_PER * d
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
+const trailCanvas = document.createElement("canvas");   // halftone streak of the last hard drop
+trailCanvas.width = COLS * CELL; trailCanvas.height = ROWS * CELL;
+let fallCells = [], fallDur = 0, chain = 0, clearLabel = "";
+let particles = [], dropFx = null, lockFx = null, comboFx = null;
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+function fullRows() {
+  const full = [];
+  for (let r = 0; r < ROWS; r++) if (board[r].every(v => v)) full.push(r);
+  return full;
+}
+
+function clearBanner(n, spin, ch) {
+  if (ch > 0) return "CHAIN X" + (ch + 1);
+  if (spin) return "T-SPIN";
+  return ["", "SINGLE!", "DOUBLE!", "TRIPLE!", "QUAD!"][n];
+}
+
+function addParticle(x, y, vx, vy, color) {
+  if (particles.length >= 300) return;
+  particles.push({ x, y, vx, vy, color, t: 0, life: rnd(300, 650), size: Math.random() < 0.35 ? 2 : 1 });
+}
+
+// sparks along the bottom of a piece that just landed
+function spawnLandParticles(id, rot, col, row) {
+  const bottom = {};
+  for (const [dr, dc] of SHAPES[id].cells[rot]) {
+    if (!(dc in bottom) || dr > bottom[dc]) bottom[dc] = dr;
+  }
+  const color = mix(PIECE_COLORS[id], 0.5);
+  for (const dc in bottom) {
+    const x = PF_X + (col + Number(dc)) * CELL + CELL / 2, y = PF_Y + (row + bottom[dc] + 1) * CELL - 1;
+    for (let i = 0; i < 3; i++) addParticle(x + rnd(-4, 4), y, rnd(-0.05, 0.05), -rnd(0.02, 0.08), color);
+  }
+}
+
+// a burst from every cell of the rows that are about to clear
+function burstRows(rows) {
+  if (reduced()) return;
+  for (const r of rows) {
+    for (let c = 0; c < COLS; c++) {
+      if (Math.random() > 0.7) continue;
+      addParticle(PF_X + c * CELL + 5, PF_Y + r * CELL + 5, rnd(-0.07, 0.07), -rnd(0.02, 0.11),
+                  mix(PIECE_COLORS[board[r][c]] || "#ffffff", 0.45));
+    }
+  }
+}
+
+// Draws the dithered streak a hard drop leaves behind, one column per column of the piece,
+// fading from nothing at the top to solid where the piece landed.
+function makeTrail(id, rot, col, fromRow, toRow) {
+  const top = {};
+  for (const [dr, dc] of SHAPES[id].cells[rot]) {
+    if (!(dc in top) || dr < top[dc]) top[dc] = dr;
+  }
+  const g = trailCanvas.getContext("2d");
+  const w = COLS * CELL, h = ROWS * CELL;
+  const img = g.createImageData(w, h), d = img.data;
+  const [cr, cg, cb] = mixRGB(PIECE_COLORS[id], 0.35);
+  for (const dc in top) {
+    const c = col + Number(dc);
+    const y1 = (toRow + top[dc]) * CELL;
+    const y0 = Math.max(0, (fromRow + top[dc]) * CELL - 20);
+    if (c < 0 || c >= COLS || y1 <= y0) continue;
+    for (let y = y0; y < y1; y++) {
+      const a = Math.min(1, ((y - y0) / (y1 - y0)) * 1.35);
+      for (let x = c * CELL; x < c * CELL + CELL; x++) {
+        if (a <= BAYER[(y & 3) * 4 + (x & 3)]) continue;
+        const i = (y * w + x) * 4;
+        d[i] = cr; d[i + 1] = cg; d[i + 2] = cb; d[i + 3] = 255;
+      }
+    }
+  }
+  g.putImageData(img, 0, 0);
+  dropFx = { t: 0 };
+}
+
+// Let every block fall straight down as far as it can. Returns false if nothing moves.
+function startFall() {
+  fallCells = [];
+  for (let c = 0; c < COLS; c++) {
+    let dst = ROWS - 1;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      const id = board[r][c];
+      if (!id) continue;
+      if (r !== dst) fallCells.push({ c, from: r, to: dst, id });
+      dst--;
+    }
+  }
+  if (!fallCells.length) return false;
+  fallDur = 0;
+  for (const f of fallCells) {
+    board[f.from][f.c] = 0;               // drawn as a falling block until it lands
+    fallDur = Math.max(fallDur, FALL_BASE + FALL_PER * (f.to - f.from));
+  }
+  return true;
+}
+
+function finishFall() {
+  for (const f of fallCells) board[f.to][f.c] = f.id;
+  fallCells = [];
+  Sound.play("lock");
+  const full = fullRows();
+  if (full.length) {                       // the fall completed more rows: next link of the chain
+    chain++;
+    clearRows = full; pendingSpin = null; phase = "clear"; phaseT = 0;
+    clearLabel = clearBanner(full.length, null, chain);
+    burstRows(full);
+    Sound.play("clear", full.length);
+  } else {
+    chain = 0;
+    phase = "play"; phaseT = 0;
+    spawn();
+  }
+}
+
+function updateFx(dt) {
+  if (dropFx && (dropFx.t += dt) > 350) dropFx = null;
+  if (lockFx && (lockFx.t += dt) > 140) lockFx = null;
+  if (comboFx && (comboFx.t += dt) > 1400) comboFx = null;
+  for (const p of particles) {
+    p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 0.00022 * dt;
+  }
+  particles = particles.filter(p => p.t < p.life);
 }
 
 function doHold() {
@@ -874,16 +1021,19 @@ function lock(fromHardDrop = false) {
   const spin = detectTSpin();
   if (!fromHardDrop) Sound.play("lock");
   let toppedOut = false;
+  const placed = [];
   for (const [dr, dc] of SHAPES[cur.id].cells[cur.rot]) {
     const r = cur.row + dr, c = cur.col + dc;
-    if (r < 0) toppedOut = true; else board[r][c] = cur.id;
+    if (r < 0) toppedOut = true; else { board[r][c] = cur.id; placed.push([r, c]); }
   }
   cur = null;
   if (toppedOut) { gameOver(); return; }
-  const full = [];
-  for (let r = 0; r < ROWS; r++) if (board[r].every(v => v)) full.push(r);
+  if (!reduced()) lockFx = { cells: placed, t: 0 };     // brief white flash where the piece landed
+  const full = fullRows();
   if (full.length) {
-    clearRows = full; pendingSpin = spin; phase = "clear"; phaseT = 0;
+    clearRows = full; pendingSpin = spin; phase = "clear"; phaseT = 0; chain = 0;
+    clearLabel = clearBanner(full.length, spin, 0);
+    burstRows(full);
     if (spin) Sound.play("tspin");
     Sound.play("clear", full.length);
   } else {
@@ -896,21 +1046,28 @@ function lock(fromHardDrop = false) {
 function finishClear() {
   const n = clearRows.length;
   const spin = pendingSpin;
-  board = board.filter((_, r) => !clearRows.includes(r));
-  while (board.length < ROWS) board.unshift(Array(COLS).fill(0));
+  const cascade = cfg.gravity === "cascade";
+  if (cascade) {
+    for (const r of clearRows) board[r].fill(0);     // blocks above fall into place in startFall()
+  } else {
+    board = board.filter((_, r) => !clearRows.includes(r));
+    while (board.length < ROWS) board.unshift(Array(COLS).fill(0));
+  }
 
   // base points for the clear
   let base = spin ? (TSPIN_PTS[spin][n] ?? TSPIN_PTS.full[n]) : LINE_PTS[n];
 
-  // back-to-back: consecutive "difficult" clears (quads or T-spins) earn x1.5
+  // back-to-back: consecutive "difficult" clears (quads or T-spins) earn x1.5.
+  // Only the first clear of a cascade counts here; later links leave the streak alone.
+  const first = chain === 0;
   const difficult = n === 4 || !!spin;
-  const isB2B = difficult && b2b;
+  const isB2B = first && difficult && b2b;
   if (isB2B) base = Math.floor(base * 1.5);
-  b2b = difficult;
+  if (first) b2b = difficult;
 
-  // combo: each consecutive clearing piece adds 50 x combo
+  // combo: each consecutive clear adds 50 x combo (every link of a cascade counts as one)
   combo++;
-  let pts = base * level;
+  let pts = base * level * (chain + 1);              // chain links score x2, x3, ...
   if (combo > 0) pts += 50 * combo * level;
 
   // perfect clear: nothing left on the board
@@ -926,10 +1083,11 @@ function finishClear() {
   if (spin === "mini") label.push("MINI");
   if (spin) label.push("T-SPIN");
   label.push(["", "SINGLE", "DOUBLE", "TRIPLE", "QUAD!"][n]);
+  if (chain > 0) label.push("CHAIN X" + (chain + 1));
   if (isB2B) label.push("B2B");
   if (perfect) label.push("PERFECT");
   label.push("+" + pts);
-  if (combo > 0) label.push("COMBO " + combo);
+  if (combo > 0) { label.push("COMBO " + combo); comboFx = { n: combo, t: 0 }; }
   msg = { lines: label, lvUp: level > oldLevel, t: 0 };
   if (perfect) Sound.play("perfect");
   else if (level > oldLevel) Sound.play("levelup");
@@ -937,6 +1095,8 @@ function finishClear() {
 
   pendingSpin = null;
   clearRows = [];
+  if (cascade && startFall()) { phase = "fall"; phaseT = 0; return; }
+  chain = 0;
   phase = "play"; phaseT = 0;
   spawn();
 }
@@ -960,6 +1120,7 @@ function update(dt) {
   if (toast) { toast.t += dt; if (toast.t > 1400) toast = null; }
   Sound.syncMusic(scene === "game" && !paused && phase !== "over");
   if (scene !== "game" || paused) return;
+  updateFx(dt);
   // READY / GO beeps
   if (phase === "ready" && phaseT === 0) Sound.play("ready");
   phaseT += dt;
@@ -971,6 +1132,7 @@ function update(dt) {
   if (phase === "ready" && phaseT >= 800 && phaseT - dt < 800) Sound.play("go");
   if (phase === "ready" && phaseT >= 1200) { phase = "play"; phaseT = 0; spawn(); }
   else if (phase === "clear" && phaseT >= 320) finishClear();
+  else if (phase === "fall" && phaseT >= fallDur) finishFall();
   else if (phase === "play") stepPlay(dt);
 }
 
@@ -1272,7 +1434,7 @@ function drawMenuScreen(title, menu, top, gap, hint, foot) {
 }
 
 function drawSettings() {
-  drawMenuScreen("SETTINGS", menus.settings, 34, 14, "", "L/R: CHANGE  ESC: BACK");
+  drawMenuScreen("SETTINGS", menus.settings, 32, 13, "", "L/R: CHANGE  ESC: BACK");
 }
 
 function drawKeys() {
@@ -1304,6 +1466,7 @@ const SCORING = [
   ["T-SPIN TRIPLE", "1600"],
   ["BACK-TO-BACK", "X1.5"],
   ["COMBO", "+50 EACH"],
+  ["CASCADE CHAIN", "X2, X3..."],
   ["PERFECT CLEAR", "+800-3200"],
   ["DROPPING PIECES", "0"],
   ["POINTS ONLY WHEN ROWS CLEAR"],
@@ -1330,7 +1493,13 @@ function drawPlayfield() {
   drawStars(pfStars, PF_X, PF_Y, "#8fd0ff");
   if (paused) return;
 
-  const flashOn = reduced() || Math.floor(phaseT / 60) % 2 === 0;
+  if (dropFx) {                               // halftone streak left by a hard drop
+    ctx.globalAlpha = 0.9 * (1 - dropFx.t / 350);
+    ctx.drawImage(trailCanvas, PF_X, PF_Y);
+    ctx.globalAlpha = 1;
+  }
+
+  const flashOn =reduced() || Math.floor(phaseT / 60) % 2 === 0;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const v = board[r][c];
@@ -1338,6 +1507,18 @@ function drawPlayfield() {
       const id = phase === "clear" && clearRows.includes(r) && flashOn ? 9 : v;
       drawCell(PF_X + c * CELL, PF_Y + r * CELL, id);
     }
+  }
+
+  if (phase === "fall") {                     // cascade: blocks dropping into the gaps
+    for (const f of fallCells) {
+      const d = f.to - f.from, p = Math.min(1, phaseT / (FALL_BASE + FALL_PER * d));
+      drawCell(PF_X + f.c * CELL, PF_Y + Math.round((f.from + d * p * p) * CELL), f.id);
+    }
+  }
+  if (lockFx) {                               // landing flash
+    ctx.globalAlpha = 0.75 * (1 - lockFx.t / 140);
+    for (const [r, c] of lockFx.cells) drawCell(PF_X + c * CELL, PF_Y + r * CELL, 9);
+    ctx.globalAlpha = 1;
   }
 
   if (phase === "play" && cur) {
@@ -1361,12 +1542,59 @@ function drawPlayfield() {
     }
   }
 
+  if (phase === "clear") drawClearFx();
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, 1 - p.t / p.life);
+    rect(Math.round(p.x), Math.round(p.y), p.size, p.size, p.color);
+  }
+  ctx.globalAlpha = 1;
+
   if (phase === "over") {
     const n = Math.min(ROWS, Math.floor(phaseT / 35));
     for (let i = 0; i < n; i++) {
       for (let c = 0; c < COLS; c++) drawCell(PF_X + c * CELL, PF_Y + (ROWS - 1 - i) * CELL, 8);
     }
   }
+}
+
+// white sweep across the rows being cleared, with the name of the clear in a banner on top
+function drawClearFx() {
+  const w = COLS * CELL, p = phaseT / 320;
+  const grow = reduced() ? 1 : Math.min(1, phaseT / 100);
+  const bw = Math.round(w * grow);
+  ctx.globalAlpha = Math.min(1, (1 - p) * 1.6);
+  for (const r of clearRows) rect(PF_X + Math.round((w - bw) / 2), PF_Y + r * CELL, bw, CELL, "#eaf6ff");
+
+  const mid = (clearRows[0] + clearRows[clearRows.length - 1]) / 2;
+  const h = 14;
+  const y = Math.max(PF_Y, Math.min(PF_Y + ROWS * CELL - h, Math.round(PF_Y + mid * CELL + CELL / 2 - h / 2)));
+  ctx.font = `8px ${FONT}`;
+  const bw2 = Math.ceil(ctx.measureText(clearLabel).width) + 10, bx = PF_X + Math.round((w - bw2) / 2);
+  ctx.globalAlpha = Math.min(1, (1 - p) * 4) * 0.94;
+  rect(bx, y, bw2, h, "#060c34");
+  rect(bx, y, bw2, 1, "#7aa0ff"); rect(bx, y + h - 1, bw2, 1, "#7aa0ff");
+  ctx.globalAlpha = Math.min(1, (1 - p) * 4);
+  const color = clearLabel === "QUAD!" ? "#ffd860" : clearLabel === "T-SPIN" ? "#c89cff"
+    : clearLabel.startsWith("CHAIN") ? "#ff9ad0" : "#5cf0e0";
+  text(clearLabel, PF_X + w / 2, y + 3, color, "center");
+  ctx.globalAlpha = 1;
+}
+
+// "COMBO n" tag that slides in from the left over the top of the playfield
+function drawComboFx() {
+  if (!comboFx) return;
+  const t = comboFx.t, IN = 160, OUT = 220, TOTAL = 1400;
+  let k = 1;
+  if (t < IN) k = 1 - Math.pow(1 - t / IN, 2);
+  else if (t > TOTAL - OUT) k = Math.max(0, 1 - (t - (TOTAL - OUT)) / OUT);
+  const num = String(comboFx.n);
+  const w = 58 + num.length * 12, h = 20;
+  const x = Math.round(PF_X + 2 - w + (w + 2) * k), y = PF_Y + 8;
+  rect(x, y, w, h, "#14286e");
+  rect(x, y, w, 1, "#8aa8ff"); rect(x, y, 1, h, "#8aa8ff");
+  rect(x, y + h - 1, w, 1, "#0c1a5a"); rect(x + w - 1, y, 1, h, "#0c1a5a");
+  text("COMBO", x + 6, y + 6, "#ffd860", "left");
+  text(num, x + 52, y + 4, "#ffffff", "left", 12);
 }
 
 function overlayPanel(y, h) {
@@ -1450,6 +1678,7 @@ function drawGame() {
     if (newBest) { if (blink(250)) text("NEW BEST", cx, y, "#ffd860", "center"); y += 14; }
     drawMenu(menus.over, cx, y, 14);
   }
+  if (!paused) drawComboFx();
 }
 
 // ============================================================
