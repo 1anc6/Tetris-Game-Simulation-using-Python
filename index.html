@@ -9,6 +9,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Stackfall" />
   <meta name="description" content="A retro pixel-art falling block puzzle game. Play with keyboard or touch." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <title>Stackfall</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -287,7 +290,7 @@ const pfStars = makeStars(14, COLS * CELL, ROWS * CELL);
 // ============================================================
 let now = 0;
 let hits = [];
-const blink = ms => Math.floor(now / ms) % 2 === 0;
+const blink = ms => reduced() || Math.floor(now / ms) % 2 === 0;   // reduced motion: steady
 
 function text(s, x, y, color, align = "left", size = 8, shadow = "#050a30") {
   ctx.font = `${size}px ${FONT}`;
@@ -307,7 +310,7 @@ function frame(x, y, w, h, color) {
 
 function drawStars(stars, ox, oy, color) {
   for (const s of stars) {
-    const b = (Math.sin(now / 700 + s.phase) + 1) / 2;
+    const b = reduced() ? 0.7 : (Math.sin(now / 700 + s.phase) + 1) / 2;
     if (b < 0.25) continue;
     ctx.globalAlpha = b;
     rect(ox + s.x, oy + s.y, 1, 1, color);
@@ -349,6 +352,7 @@ function triLeft(x, y, color)  { for (let i = 0; i < 4; i++) rect(x + 3 - i, y +
 
 function chooseMenu(menu, i) {
   menu.sel = i;
+  rebinding = null; rebindMsg = "";      // picking anything else cancels a pending key change
   const item = menu.items[i];
   if (!item[2]) Sound.play("select");   // items marked silent play their own sound
   item[1]();
@@ -389,6 +393,97 @@ function drawPreview(id, cx, cy, size, alpha = 1) {
   }
   ctx.globalAlpha = 1;
 }
+
+// ============================================================
+//  SETTINGS  (saved in the browser)
+// ============================================================
+const DEFAULT_KEYS = {
+  left:       ["ArrowLeft", "a"],
+  right:      ["ArrowRight", "d"],
+  down:       ["ArrowDown", "s"],
+  rotate:     ["ArrowUp", "x", "w"],
+  rotateCCW:  ["z", "Control"],
+  drop:       [" "],
+  hold:       ["c", "Shift"],
+  pause:      ["p", "Escape"],
+};
+// order and names of the actions on the key bindings screen
+const ACTIONS = [
+  ["left", "MOVE LEFT"], ["right", "MOVE RIGHT"], ["down", "SOFT DROP"], ["drop", "HARD DROP"],
+  ["rotate", "ROTATE"], ["rotateCCW", "ROTATE BACK"], ["hold", "HOLD"], ["pause", "PAUSE"],
+];
+const DAS_OPTS = [80, 100, 120, 140, 160, 200, 240, 300];   // ms before a held key starts repeating
+const ARR_OPTS = [0, 15, 30, 45, 60, 80, 100];              // ms between repeats (0 = instant)
+const VOL_OPTS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const MOTION_OPTS = ["full", "reduced"];
+const CFG_KEY = "stackfall-settings";
+// keys the game keeps for itself: Enter picks menu items, M mutes, Escape cancels
+const RESERVED_KEYS = ["Enter", "Escape", "m"];
+const BINDABLE_NAMED = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Shift", "Control", "Backspace"];
+
+const cloneKeys = k => Object.fromEntries(Object.entries(k).map(([a, ks]) => [a, [...ks]]));
+
+function keysValid(keys) {
+  const seen = new Set();
+  for (const [a] of ACTIONS) {
+    const ks = keys && keys[a];
+    if (!Array.isArray(ks) || !ks.length) return false;
+    for (const k of ks) {
+      if (typeof k !== "string" || seen.has(k) || RESERVED_KEYS.includes(k) && !DEFAULT_KEYS[a].includes(k)) return false;
+      seen.add(k);
+    }
+  }
+  return true;
+}
+
+function loadCfg() {
+  const cfg = {
+    ghost: true,
+    motion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : "full",
+    das: 160, arr: 45, music: 10, sfx: 10,
+    keys: cloneKeys(DEFAULT_KEYS),
+  };
+  try {
+    const s = JSON.parse(localStorage.getItem(CFG_KEY) || "{}");
+    if (typeof s.ghost === "boolean") cfg.ghost = s.ghost;
+    if (MOTION_OPTS.includes(s.motion)) cfg.motion = s.motion;
+    if (DAS_OPTS.includes(s.das)) cfg.das = s.das;
+    if (ARR_OPTS.includes(s.arr)) cfg.arr = s.arr;
+    if (VOL_OPTS.includes(s.music)) cfg.music = s.music;
+    if (VOL_OPTS.includes(s.sfx)) cfg.sfx = s.sfx;
+    if (keysValid(s.keys)) cfg.keys = cloneKeys(s.keys);
+  } catch (e) {}
+  return cfg;
+}
+const cfg = loadCfg();
+function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+// key -> action lookup, rebuilt whenever the bindings change
+let KEYMAP = {};
+function buildKeymap() {
+  KEYMAP = {};
+  for (const a in cfg.keys) for (const k of cfg.keys[a]) KEYMAP[k] = a;
+}
+buildKeymap();
+
+const KEY_NAMES = { ArrowLeft: "LEFT", ArrowRight: "RIGHT", ArrowUp: "UP", ArrowDown: "DOWN",
+                    " ": "SPACE", Control: "CTRL", Shift: "SHIFT", Escape: "ESC", Backspace: "BKSP" };
+const keyName = k => KEY_NAMES[k] || k.toUpperCase();
+const keysLabel = a => cfg.keys[a].map(keyName).join("/");
+
+// Give `action` the single key `k` (its other keys, like the A/D/W/S aliases, are dropped).
+// A key that another action already uses is refused so nothing gets silently unbound;
+// returns the name of that action, or "" when the key was assigned.
+function bindKey(action, k) {
+  const owner = KEYMAP[k];
+  if (owner && owner !== action) return ACTIONS.find(([a]) => a === owner)[1];
+  cfg.keys[action] = [k];
+  buildKeymap();
+  saveCfg();
+  return "";
+}
+
+const reduced = () => cfg.motion === "reduced";
 
 // ============================================================
 //  SOUND  (all sounds are synthesized live, no audio files)
@@ -438,8 +533,8 @@ const Sound = {
 
   apply() {
     if (!this.ctx) return;
-    this.sfx.gain.value = this.mode === "off" ? 0 : 1;
-    this.music.gain.value = this.mode === "all" ? 0.3 : 0;
+    this.sfx.gain.value = this.mode === "off" ? 0 : cfg.sfx / 10;
+    this.music.gain.value = this.mode === "all" ? 0.3 * cfg.music / 10 : 0;
   },
 
   cycle() {
@@ -566,13 +661,55 @@ let hi = 0;
 try { hi = Number(localStorage.getItem("stackfall-hi")) || 0; } catch (e) {}
 function saveHi() { try { localStorage.setItem("stackfall-hi", String(hi)); } catch (e) {} }
 
+// Menu items are [label, onChoose, silent?, onLeftRight?, description?].
+// A settings row: LEFT/RIGHT step through `options`, Enter or a tap steps forward.
+function optionRow(label, key, options, fmt, desc, onChange) {
+  const step = d => {
+    const n = options.length, i = Math.max(0, options.indexOf(cfg[key]));
+    cfg[key] = options[(i + d + n) % n];
+    saveCfg();
+    if (onChange) onChange();
+    Sound.play("menu");
+  };
+  return [() => label + ": " + fmt(cfg[key]), () => step(1), true, step, desc];
+}
+const onOff = v => (v ? "ON" : "OFF");
+const ms = v => (v === 0 ? "INSTANT" : v + "MS");
+let rebinding = null, rebindMsg = "";      // action waiting for a new key, and a warning for the last key tried
+
+function resetKeys() {
+  cfg.keys = cloneKeys(DEFAULT_KEYS);
+  buildKeymap();
+  saveCfg();
+}
+
 const menus = {
   title: { sel: 0, items: [
     ["SINGLE",   () => startGame()],
     ["CONTROLS", () => { scene = "controls"; }],
     ["SCORING",  () => { scene = "scoring"; }],
-    [() => "SOUND: " + Sound.label(), () => Sound.cycle(), true],
+    ["SETTINGS", () => { scene = "settings"; menus.settings.sel = 0; }],
     ["CREDITS",  () => { scene = "credits"; }],
+  ] },
+  settings: { sel: 0, back: () => goTitle(), items: [
+    [() => "SOUND: " + Sound.label(), () => Sound.cycle(), true, () => Sound.cycle(), "ON, EFFECTS ONLY OR OFF"],
+    optionRow("MUSIC", "music", VOL_OPTS, String, "MUSIC VOLUME", () => Sound.apply()),
+    optionRow("EFFECTS VOL", "sfx", VOL_OPTS, String, "SOUND EFFECTS VOLUME", () => Sound.apply()),
+    optionRow("GHOST PIECE", "ghost", [true, false], onOff, "SHOW WHERE THE PIECE LANDS"),
+    optionRow("MOTION", "motion", MOTION_OPTS, v => v.toUpperCase(), "REDUCED: NO SHAKE/FLASH"),
+    optionRow("DAS", "das", DAS_OPTS, ms, "DELAY BEFORE KEY REPEATS"),
+    optionRow("ARR", "arr", ARR_OPTS, ms, "REPEAT SPEED WHEN HELD"),
+    ["KEY BINDINGS", () => { scene = "keys"; menus.keys.sel = 0; }, false, null, "CHANGE KEYBOARD CONTROLS"],
+    ["BACK", () => goTitle()],
+  ] },
+  keys: { sel: 0, back: () => { scene = "settings"; }, items: [
+    ...ACTIONS.map(([a, name]) => [
+      () => name + ": " + (rebinding === a ? "PRESS KEY" : keysLabel(a)),
+      () => { rebinding = a; rebindMsg = ""; },
+      true,
+    ]),
+    ["RESET DEFAULTS", () => resetKeys()],
+    ["BACK", () => { scene = "settings"; }],
   ] },
   pause: { sel: 0, items: [
     ["RESUME", () => { paused = false; }],
@@ -585,7 +722,7 @@ const menus = {
   ], back: () => goTitle() },
 };
 
-function goTitle() { scene = "title"; paused = false; clearHeld(); }
+function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); }
 
 function clearHeld() {
   held.left = held.right = held.down = false;
@@ -712,7 +849,7 @@ function hardDrop() {
   const g = ghostRow();
   if (g > cur.row) lastRotate = false;
   cur.row = g;
-  shakeT = 110;
+  shakeT = reduced() ? 0 : 110;
   Sound.play("drop");
   lock(true);
 }
@@ -841,9 +978,10 @@ function stepPlay(dt) {
   // auto-shift while left/right is held
   if (hDir) {
     dasT += dt;
-    if (dasT >= 160) {
+    if (dasT >= cfg.das) {
       arrT += dt;
-      while (arrT >= 45) { arrT -= 45; if (!shift(hDir)) { arrT = 0; break; } }
+      // arr 0 = instant: keep shifting until the piece hits a wall or the stack
+      while (arrT >= cfg.arr) { arrT -= cfg.arr; if (!shift(hDir)) { arrT = 0; break; } }
     }
   }
   // gravity (faster while soft-dropping)
@@ -861,21 +999,12 @@ function stepPlay(dt) {
 }
 
 // ============================================================
-//  INPUT
+//  INPUT  (key bindings live in cfg.keys, see SETTINGS)
 // ============================================================
-const KEYMAP = {
-  ArrowLeft: "left", a: "left",
-  ArrowRight: "right", d: "right",
-  ArrowDown: "down", s: "down",
-  ArrowUp: "rotate", x: "rotate", w: "rotate",
-  z: "rotateCCW", Control: "rotateCCW",
-  " ": "drop",
-  c: "hold", Shift: "hold",
-  p: "pause", Escape: "pause",
-};
-
 function activeMenu() {
   if (scene === "title") return menus.title;
+  if (scene === "settings") return menus.settings;
+  if (scene === "keys") return menus.keys;
   if (scene !== "game") return null;
   if (paused) return menus.pause;
   if (phase === "over" && phaseT >= OVER_MENU_DELAY) return menus.over;
@@ -915,13 +1044,30 @@ document.addEventListener("keydown", e => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " "].includes(k)) e.preventDefault();
   if (e.repeat) return;
 
+  // waiting for the key to assign on the key bindings screen
+  if (rebinding) {
+    e.preventDefault();
+    if (k === "Escape") { rebinding = null; rebindMsg = ""; Sound.play("menu"); }
+    else if (RESERVED_KEYS.includes(k) || !(k.length === 1 || BINDABLE_NAMED.includes(k))) {
+      rebindMsg = "CAN'T USE THAT KEY";
+    } else {
+      const usedBy = bindKey(rebinding, k);
+      if (usedBy) rebindMsg = keyName(k) + " USED BY " + usedBy;
+      else { rebinding = null; rebindMsg = ""; Sound.play("select"); }
+    }
+    return;
+  }
+
   if (k === "m") { Sound.cycle(); toast = { t: 0 }; return; }
 
   const menu = activeMenu();
   if (menu) {
     const n = menu.items.length;
+    const item = menu.items[menu.sel];
     if (k === "ArrowUp" || k === "w") { menu.sel = (menu.sel + n - 1) % n; Sound.play("menu"); }
     else if (k === "ArrowDown" || k === "s") { menu.sel = (menu.sel + 1) % n; Sound.play("menu"); }
+    else if ((k === "ArrowLeft" || k === "a") && item[3]) item[3](-1);
+    else if ((k === "ArrowRight" || k === "d") && item[3]) item[3](1);
     else if (k === "Enter" || k === " ") chooseMenu(menu, menu.sel);
     else if ((k === "Escape" || k === "p") && menu.back) { Sound.play("pause"); menu.back(); }
     return;
@@ -1073,7 +1219,7 @@ function drawTitle() {
   const wx = 103, wy = 74;
   const t = now % 2400;
   const landed = t >= 1600;
-  const flash = landed && Math.floor(t / 100) % 2 === 0;
+  const flash = landed && (reduced() || Math.floor(t / 100) % 2 === 0);
   MINI.forEach((row, r) => {
     [...row].forEach((ch, c) => {
       if (ch === " ") return;
@@ -1112,14 +1258,31 @@ function drawInfoScreen(title, rows, twoCol, gap = 16, top = 42) {
   if (blink(600)) text(isTouch ? "TAP TO GO BACK" : "ESC: BACK", 128, 204, "#4f62b0", "center");
 }
 
-const CONTROLS = [
-  ["LEFT/RIGHT", "MOVE"],
-  ["DOWN", "SOFT DROP"],
-  ["SPACE", "HARD DROP"],
-  ["UP / X", "ROTATE"],
-  ["Z / CTRL", "ROTATE BACK"],
-  ["C / SHIFT", "HOLD"],
-  ["P / ESC", "PAUSE"],
+// a screen made of a menu (settings, key bindings) with a hint line under it
+function drawMenuScreen(title, menu, top, gap, hint, foot) {
+  drawStars(titleStars, 0, 0, "#7fd0ff");
+  drawScreenFrame();
+  text(title, 128, 12, "#ffd860", "center");
+  dottedLine(24, 24, 208);
+  drawMenu(menu, 128, top, gap);
+  const desc = menu.items[menu.sel][4];
+  if (hint) text(hint, 128, 178, rebindMsg ? "#ff6a80" : "#8ab4ff", "center");
+  else if (desc) text(desc, 128, 178, "#8ab4ff", "center");
+  text(isTouch ? "TAP A ROW" : foot, 128, 204, "#4f62b0", "center");
+}
+
+function drawSettings() {
+  drawMenuScreen("SETTINGS", menus.settings, 34, 14, "", "L/R: CHANGE  ESC: BACK");
+}
+
+function drawKeys() {
+  const hint = rebindMsg || (rebinding ? "PRESS A KEY - ESC CANCELS" : "ENTER: CHANGE THIS KEY");
+  drawMenuScreen("KEY BINDINGS", menus.keys, 32, 14, hint, "ENTER: CHANGE  ESC: BACK");
+}
+
+// follows the current key bindings, so remapped keys show up here
+const controlRows = () => [
+  ...ACTIONS.map(([a, name]) => [keysLabel(a), name]),
   ["M", "SOUND"],
 ];
 const TOUCH_CONTROLS = [
@@ -1167,7 +1330,7 @@ function drawPlayfield() {
   drawStars(pfStars, PF_X, PF_Y, "#8fd0ff");
   if (paused) return;
 
-  const flashOn = Math.floor(phaseT / 60) % 2 === 0;
+  const flashOn = reduced() || Math.floor(phaseT / 60) % 2 === 0;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const v = board[r][c];
@@ -1179,7 +1342,7 @@ function drawPlayfield() {
 
   if (phase === "play" && cur) {
     const g = ghostRow();
-    if (g !== cur.row) {
+    if (cfg.ghost && g !== cur.row) {
       ctx.globalAlpha = 0.75;
       ctx.fillStyle = PIECE_COLORS[cur.id];
       for (const [dr, dc] of SHAPES[cur.id].cells[cur.rot]) {
@@ -1296,7 +1459,9 @@ function render() {
   hits = [];
   rect(0, 0, W, H, "#000");
   if (scene === "title") drawTitle();
-  else if (scene === "controls") drawInfoScreen("CONTROLS", isTouch ? TOUCH_CONTROLS : CONTROLS, true);
+  else if (scene === "settings") drawSettings();
+  else if (scene === "keys") drawKeys();
+  else if (scene === "controls") drawInfoScreen("CONTROLS", isTouch ? TOUCH_CONTROLS : controlRows(), true);
   else if (scene === "scoring") drawInfoScreen("SCORING", SCORING, true, 12, 30);
   else if (scene === "credits") drawInfoScreen("CREDITS", CREDITS, false);
   else drawGame();
@@ -1315,6 +1480,11 @@ function loop(t) {
 resize();
 if (document.fonts) document.fonts.load(`8px ${FONT}`).then(resize, () => {});
 requestAnimationFrame(loop);
+
+// offline support + "install app" (needs http/https, so it is skipped for file:// previews)
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
 </script>
 </body>
 </html>

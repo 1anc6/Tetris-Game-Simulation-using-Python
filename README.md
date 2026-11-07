@@ -21,11 +21,15 @@ modern rules, touch controls and chiptune sound.
 - **Plays on phones**: on-screen buttons plus swipe gestures, in portrait and landscape
 - **Sound**: synthesized chiptune sound effects and an original music loop, no audio files
 - **Menus**: title screen, controls, scoring and credits screens, pause menu and game over screen
+- **Settings**: sound and music volume, ghost piece on/off, reduced motion, auto-repeat speed (DAS/ARR) and remappable keys, all saved in the browser
+- **Installable and offline**: add it to your home screen or desktop and play without a connection
 - **Saves your best score** in the browser
 
 ## Controls
 
 ### Keyboard
+
+These are the default keys. You can change them under **Settings → Key bindings**.
 
 | Key | Action |
 |---|---|
@@ -52,6 +56,20 @@ rotate / drop / hold / pause on the right. You can also play right on the board:
 | Flick down | Hard drop |
 | Flick up | Hold |
 
+## Settings
+
+Open **Settings** from the title screen. Use ↑ ↓ to pick a row and ← → to change it (or tap a row).
+
+| Setting | What it does |
+|---|---|
+| Sound | All sound, effects only, or off (same as the M key) |
+| Music / Effects vol | Volume from 0 to 10 |
+| Ghost piece | Show or hide the outline where the piece will land |
+| Motion | *Reduced* turns off screen shake, flashing and twinkling. It starts on *Reduced* if your device asks for reduced motion |
+| DAS | Delay in ms before a held left/right key starts repeating |
+| ARR | Delay in ms between repeats while held (*Instant* slides straight to the wall) |
+| Key bindings | Pick an action, press the new key. A key already used by another action is refused. Enter, Esc and M are reserved |
+
 ## Scoring
 
 You only score when rows are cleared. Dropping pieces gives no points.
@@ -70,11 +88,14 @@ A T-spin counts when the T piece's last move was a rotation and 3 of the 4 corne
 
 ## Run it locally
 
-The web game is a single file with no build step. Open `index.html` in a browser, or serve the folder:
+The web game has no build step. Open `index.html` in a browser, or serve the folder:
 
 ```bash
 npx serve .
 ```
+
+Offline support and installing the app only work when the page is served over http(s) (such as the command above),
+not when it is opened straight from disk.
 
 ### Python version
 
@@ -93,14 +114,18 @@ Controls: arrow keys to move, ↓ to soft drop, ↑ to rotate, any key to restar
 
 ```
 index.html              The whole web game: HTML, CSS and JavaScript in one file
+manifest.webmanifest    Web app manifest (name, colors, icons) for installing the game
+sw.js                   Service worker: offline play and caching
+icons/                  App icons (any, maskable and Apple touch)
 docs/                   Screenshots used in this README
 Final Tetris Project/   Original Python / pygame version
 .github/workflows/      GitHub Pages deployment
 ```
 
 Inside `index.html` the script is split into sections: config and piece data, canvas scaling, sprites,
-sound engine, game state and rules, input (keyboard, buttons, gestures) and rendering.
-To rename the game, change `GAME_TITLE` at the top of the script.
+settings, sound engine, game state and rules, input (keyboard, buttons, gestures) and rendering.
+To rename the game, change `GAME_TITLE` at the top of the script (and the names in `manifest.webmanifest`).
+The page itself is always fetched fresh when online. If you add or rename a file listed in `SHELL` in `sw.js`, bump `CACHE` there too.
 
 ## Deployment
 
