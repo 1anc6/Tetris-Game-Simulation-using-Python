@@ -20,6 +20,7 @@ modern rules, touch controls and chiptune sound.
 - **Effects**: halftone drop trail and sparks on a hard drop, landing flash, a sweeping clear banner and a sliding combo tag
 - **Levels**: every 10 lines raises the level and the falling speed
 - **Guideline scoring**: T-spins, back-to-back bonus, combos and perfect clears (see [Scoring](#scoring))
+- **Fills any screen**: the game scales to use all the space in the window instead of snapping to whole-number sizes. Held upright on a phone it switches to a tall layout with the hold, score and next queue in a strip above a much larger board
 - **Plays on phones**: on-screen buttons plus swipe gestures, in portrait and landscape
 - **Sound**: synthesized chiptune sound effects and an original music loop, no audio files
 - **Menus**: title screen, controls, scoring and credits screens, pause menu and game over screen
@@ -43,6 +44,7 @@ These are the default keys. You can change them under **Settings → Key binding
 | C / Shift | Hold |
 | P / Esc | Pause |
 | M | Sound: on → effects only → off |
+| F | Fullscreen on / off |
 | Enter | Select in menus |
 
 ### Touch

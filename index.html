@@ -28,12 +28,12 @@
       grid-template-areas: "screen";
       place-content: center;
       place-items: center;
-      gap: 12px;
+      gap: 8px;
       padding:
-        max(16px, env(safe-area-inset-top))
-        max(16px, env(safe-area-inset-right))
-        max(16px, env(safe-area-inset-bottom))
-        max(16px, env(safe-area-inset-left));
+        max(8px, env(safe-area-inset-top))
+        max(8px, env(safe-area-inset-right))
+        max(8px, env(safe-area-inset-bottom))
+        max(8px, env(safe-area-inset-left));
       font-family: "Press Start 2P", monospace;
       -webkit-user-select: none;
       user-select: none;
@@ -111,9 +111,16 @@
 //  CONFIG
 // ============================================================
 const GAME_TITLE = "STACKFALL";          // shown on the title screen
-const W = 256, H = 224;                  // logical (pixel-art) resolution
+// Logical (pixel-art) resolution and playfield position. The game screen picks one of two
+// layouts to fit the window: "wide" (panels either side of the board) or "tall" (panels in a
+// strip above it, for phones held upright). All other screens always use "wide".
+const LAYOUTS = {
+  wide: { W: 256, H: 224, PF_X: 78, PF_Y: 12 },
+  tall: { W: 160, H: 276, PF_X: 30, PF_Y: 66 },
+};
+let layout = "wide";
+let { W, H, PF_X, PF_Y } = LAYOUTS.wide;
 const COLS = 10, ROWS = 20, CELL = 10;
-const PF_X = 78, PF_Y = 12;              // playfield position
 const FONT = '"Press Start 2P", monospace';
 
 const PIECE_COLORS = {
@@ -207,12 +214,24 @@ function resize() {
     if (matchMedia("(orientation: landscape)").matches) availW -= padL.offsetWidth + padR.offsetWidth + 24;
     else availH -= Math.max(padL.offsetHeight, padR.offsetHeight) + 12;
   }
-  let s = Math.min(availW / W, availH / H);
-  if (s >= 2) s = Math.floor(s);
-  s = Math.max(s, 0.5);
+  // in a game, use whichever layout gets the board the biggest on this screen
+  let want = "wide";
+  if (scene === "game") {
+    const wide = Math.min(availW / LAYOUTS.wide.W, availH / LAYOUTS.wide.H);
+    const tall = Math.min(availW / LAYOUTS.tall.W, availH / LAYOUTS.tall.H);
+    if (tall > wide * 1.05) want = "tall";
+  }
+  if (want !== layout) { layout = want; ({ W, H, PF_X, PF_Y } = LAYOUTS[want]); }
+
+  // fill the space: any scale, not just whole numbers. The canvas is drawn at a whole-number
+  // scale S (sharp) that is at least as big as the screen needs, then shrunk a little by the browser.
+  const s = Math.max(0.5, Math.min(availW / W, availH / H));
+  const target = s * (window.devicePixelRatio || 1);
+  S = Math.max(1, Math.ceil(target - 0.02));
+  while (S > 1 && W * S * H * S > 4.5e6) S--;     // keep very large screens fast
   canvas.style.width = Math.round(W * s) + "px";
   canvas.style.height = Math.round(H * s) + "px";
-  S = Math.max(1, Math.round(s * (window.devicePixelRatio || 1)));
+  canvas.style.imageRendering = Math.abs(target - S) < 0.02 ? "pixelated" : "auto";
   canvas.width = W * S;
   canvas.height = H * S;
   ctx.setTransform(S, 0, 0, S, 0, 0);
@@ -271,10 +290,12 @@ function panelBg(w, h) {
   g.fillStyle = grad;
   g.fillRect(0, 0, c.width, c.height);
   if (S >= 2) {
+    // one thin dark line per logical pixel, so the mesh scales cleanly at any size
+    const t = Math.max(1, Math.round(S / 4));
     g.fillStyle = "rgba(0,0,0,0.22)";
-    for (let y = 1; y < c.height; y += 2) g.fillRect(0, y, c.width, 1);
+    for (let y = S - t; y < c.height; y += S) g.fillRect(0, y, c.width, t);
     g.fillStyle = "rgba(0,0,0,0.12)";
-    for (let x = 1; x < c.width; x += 2) g.fillRect(x, 0, 1, c.height);
+    for (let x = S - t; x < c.width; x += S) g.fillRect(x, 0, t, c.height);
   }
   bgCache.set(key, c);
   return c;
@@ -338,14 +359,14 @@ function dottedLine(x, y, w) {
   for (let i = 0; i < w; i += 4) rect(x + i, y, 2, 1, "#2a4ab0");
 }
 
-function drawPillar(x) {
-  rect(x, 0, 8, H, "#2448b8");
-  rect(x, 0, 1, H, "#0a1450");
-  rect(x + 1, 0, 1, H, "#5a86ff");
-  rect(x + 3, 0, 1, H, "#3a64e0");
-  rect(x + 6, 0, 1, H, "#18329a");
-  rect(x + 7, 0, 1, H, "#0a1450");
-  for (let y = 18; y < H; y += 24) {
+function drawPillar(x, y0 = 0, h = H) {
+  rect(x, y0, 8, h, "#2448b8");
+  rect(x, y0, 1, h, "#0a1450");
+  rect(x + 1, y0, 1, h, "#5a86ff");
+  rect(x + 3, y0, 1, h, "#3a64e0");
+  rect(x + 6, y0, 1, h, "#18329a");
+  rect(x + 7, y0, 1, h, "#0a1450");
+  for (let y = y0 + 18; y < y0 + h; y += 24) {
     rect(x + 3, y, 2, 2, "#8aa8ff");
     rect(x + 4, y + 1, 1, 1, "#18329a");
   }
@@ -423,7 +444,7 @@ const MOTION_OPTS = ["full", "reduced"];
 const GRAVITY_OPTS = ["cascade", "classic"];
 const CFG_KEY = "stackfall-settings";
 // keys the game keeps for itself: Enter picks menu items, M mutes, Escape cancels
-const RESERVED_KEYS = ["Enter", "Escape", "m"];
+const RESERVED_KEYS = ["Enter", "Escape", "m", "f"];   // F toggles fullscreen
 const BINDABLE_NAMED = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Shift", "Control", "Backspace"];
 
 const cloneKeys = k => Object.fromEntries(Object.entries(k).map(([a, ks]) => [a, [...ks]]));
@@ -730,7 +751,7 @@ const menus = {
   ], back: () => goTitle() },
 };
 
-function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); }
+function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); resize(); }
 
 function clearHeld() {
   held.left = held.right = held.down = false;
@@ -765,6 +786,7 @@ function startGame() {
   particles = []; dropFx = null; lockFx = null; comboFx = null;
   scene = "game";
   clearHeld();
+  resize();                          // the game screen may use a different layout
 }
 
 function gravityMs() {
@@ -1221,6 +1243,7 @@ document.addEventListener("keydown", e => {
   }
 
   if (k === "m") { Sound.cycle(); toast = { t: 0 }; return; }
+  if (k === "f") { toggleFullscreen(); return; }
 
   const menu = activeMenu();
   if (menu) {
@@ -1245,6 +1268,13 @@ document.addEventListener("keyup", e => {
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (KEYMAP[k]) release(KEYMAP[k]);
 });
+
+function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+  } catch (e) {}
+}
 
 function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} }
 
@@ -1446,6 +1476,7 @@ function drawKeys() {
 const controlRows = () => [
   ...ACTIONS.map(([a, name]) => [keysLabel(a), name]),
   ["M", "SOUND"],
+  ["F", "FULLSCREEN"],
 ];
 const TOUCH_CONTROLS = [
   ["TAP", "ROTATE"],
@@ -1611,9 +1642,14 @@ function drawGame() {
   ctx.save();
   if (shakeT > 0) ctx.translate(0, 1);
 
-  // frame
-  drawPillar(PF_X - 8);
-  drawPillar(PF_X + COLS * CELL);
+  // frame (full-height pillars beside the board, or just board-high ones in the tall layout)
+  if (layout === "tall") {
+    drawPillar(PF_X - 8, PF_Y - 6, ROWS * CELL + 12);
+    drawPillar(PF_X + COLS * CELL, PF_Y - 6, ROWS * CELL + 12);
+  } else {
+    drawPillar(PF_X - 8);
+    drawPillar(PF_X + COLS * CELL);
+  }
   rect(PF_X, PF_Y - 6, COLS * CELL, 6, "#2448b8");
   rect(PF_X, PF_Y - 6, COLS * CELL, 1, "#5a86ff");
   rect(PF_X, PF_Y - 1, COLS * CELL, 1, "#0a1450");
@@ -1623,6 +1659,30 @@ function drawGame() {
   drawPlayfield();
   ctx.restore();
 
+  if (layout === "tall") drawHudTall(cx); else drawHudWide();
+
+  // ---- overlays on the playfield (positions are relative to the board, so they work in both layouts)
+  const oy = PF_Y - 12;
+  if (paused) {
+    overlayPanel(72 + oy, 80);
+    if (blink(500)) text("PAUSE", cx, 82 + oy, "#ffd860", "center");
+    drawMenu(menus.pause, cx, 104 + oy, 14);
+  } else if (phase === "ready") {
+    if (phaseT < 800) { if (blink(160)) text("READY", cx, 100 + oy, "#ffd860", "center"); }
+    else text("GO!", cx, 100 + oy, "#5cf08c", "center");
+  } else if (phase === "over" && phaseT >= OVER_MENU_DELAY) {
+    overlayPanel(64 + oy, newBest ? 86 : 72);
+    text("GAME", cx, 74 + oy, "#ff6a80", "center");
+    text("OVER", cx, 86 + oy, "#ff6a80", "center");
+    let y = 104 + oy;
+    if (newBest) { if (blink(250)) text("NEW BEST", cx, y, "#ffd860", "center"); y += 14; }
+    drawMenu(menus.over, cx, y, 14);
+  }
+  if (!paused) drawComboFx();
+}
+
+// side panels: hold + best + score messages on the left, next queue + stats on the right
+function drawHudWide() {
   // ---- left panel
   text("HOLD", 8, 8, "#9ec0ff");
   drawBox(6, 18, 58, 40);
@@ -1661,24 +1721,37 @@ function drawGame() {
   text(String(level), RX + 57, 164, "#ffffff", "right");
   text("SCORE", RX + 2, 180, "#9ec0ff");
   text(String(shownScore), RX + 57, 192, "#ffffff", "right");
+}
 
-  // ---- overlays on the playfield
-  if (paused) {
-    overlayPanel(72, 80);
-    if (blink(500)) text("PAUSE", cx, 82, "#ffd860", "center");
-    drawMenu(menus.pause, cx, 104, 14);
-  } else if (phase === "ready") {
-    if (phaseT < 800) { if (blink(160)) text("READY", cx, 100, "#ffd860", "center"); }
-    else text("GO!", cx, 100, "#5cf08c", "center");
-  } else if (phase === "over" && phaseT >= OVER_MENU_DELAY) {
-    overlayPanel(64, newBest ? 86 : 72);
-    text("GAME", cx, 74, "#ff6a80", "center");
-    text("OVER", cx, 86, "#ff6a80", "center");
-    let y = 104;
-    if (newBest) { if (blink(250)) text("NEW BEST", cx, y, "#ffd860", "center"); y += 14; }
-    drawMenu(menus.over, cx, y, 14);
+// everything in one strip above the board (phones held upright): hold, stats, next queue
+function drawHudTall(cx) {
+  text("HOLD", 4, 4, "#9ec0ff");
+  drawBox(4, 14, 40, 42);
+  drawPreview(hold, 24, 35, 6, holdUsed ? 0.4 : 1);
+
+  text("NEXT", 116, 4, "#9ec0ff");
+  drawBox(116, 14, 40, 42);
+  if (!paused) {
+    drawPreview(queue[0], 136, 23, 6);
+    drawPreview(queue[1], 136, 35, 6);
+    drawPreview(queue[2], 136, 47, 6);
   }
-  if (!paused) drawComboFx();
+
+  text("SCORE", 80, 3, "#9ec0ff", "center");
+  text(String(shownScore), 80, 13, "#ffffff", "center");
+  text("LV " + level, 80, 26, "#9ec0ff", "center");
+  text("LN " + lines, 80, 36, "#9ec0ff", "center");
+  text("HI " + Math.max(hi, score), 80, 46, "#6a80d0", "center");
+
+  // points and bonuses of the last clear, over the top of the board (the clear banner and
+  // combo tag already name the clear itself)
+  if (msg && !paused) {
+    const rows = msg.lines.filter(l => l.startsWith("+") || l === "B2B" || l === "PERFECT");
+    rows.forEach((line, i) => {
+      text(line, cx, PF_Y + 34 + i * 11, line.startsWith("+") ? "#ffffff" : "#5cf0e0", "center");
+    });
+    if (msg.lvUp && blink(150)) text("LV UP!", cx, PF_Y + 34 + rows.length * 11, "#5cf08c", "center");
+  }
 }
 
 // ============================================================
