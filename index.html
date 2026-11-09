@@ -472,6 +472,7 @@ function loadCfg() {
     motion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : "full",
     gravity: "cascade",
     das: 160, arr: 45, music: 10, sfx: 10,
+    autoSave: true,
     keys: cloneKeys(DEFAULT_KEYS),
   };
   try {
@@ -484,6 +485,7 @@ function loadCfg() {
     if (VOL_OPTS.includes(s.music)) cfg.music = s.music;
     if (VOL_OPTS.includes(s.sfx)) cfg.sfx = s.sfx;
     if (keysValid(s.keys)) cfg.keys = cloneKeys(s.keys);
+    if (typeof s.autoSave === "boolean") cfg.autoSave = s.autoSave;
   } catch (e) {}
   return cfg;
 }
@@ -697,7 +699,7 @@ const MODES = ["marathon", "sprint", "ultra"];
 const MODE_NAMES = { marathon: "MARATHON", sprint: "SPRINT 40", ultra: "ULTRA 2:00" };
 const SPRINT_LINES = 40, ULTRA_MS = 120000;
 let mode = "marathon";
-let gameMs = 0, pieces = 0, clearLog = [], finished = false;
+let gameMs = 0, pieces = 0, clearLog = [], finished = false, gameId = 0, bestAtStart = null;
 const fmtTime = ms => {
   const cs = Math.floor(ms / 10);
   return Math.floor(cs / 6000) + ":" + String(Math.floor(cs / 100) % 60).padStart(2, "0") + "." + String(cs % 100).padStart(2, "0");
@@ -727,10 +729,12 @@ if (!secret) {
 }
 
 async function rpc(fn, body) {
+  const json = JSON.stringify(body);
   const res = await fetch(SB_URL + "/rpc/" + fn, {
     method: "POST",
     headers: { apikey: SB_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: json,
+    keepalive: json.length < 60000,   // lets the request finish while the app is being closed
   });
   let data = null;
   try { data = await res.json(); } catch (e) {}
@@ -823,11 +827,23 @@ const Board = {
 
   // the finished game, ready to send (everything the server needs to check it)
   record() {
-    return { mode, score, lines, level, ms: Math.round(gameMs), pieces, log: clearLog.slice() };
+    return { gid: gameId, mode, score, lines, level, ms: Math.round(gameMs), pieces, log: clearLog.slice() };
   },
   queue(g) {
+    // a newer save of the same game replaces one that hasn't gone out yet
+    if (g.gid) this.pending = this.pending.filter((p, i) => p.gid !== g.gid || (i === 0 && this.flushing));
     this.pending.push(g);
     this.savePending();
+  },
+  // auto save: send the game in progress (when the app is hidden, paused or quit)
+  savedScore: 0,
+  checkpoint() {
+    if (!cfg.autoSave || scene !== "game" || phase === "over") return;
+    const g = this.record();
+    if (!countsForBoard(g) || g.score <= this.savedScore) return;
+    this.savedScore = g.score;
+    keepBest(g);
+    if (this.name && !this.nameTaken) { this.queue(g); this.flush(); }
   },
   submit(g) {
     if (!this.name || this.nameTaken) return;
@@ -849,6 +865,12 @@ const Board = {
           });
         } catch (e) { if (g.latest) this.overMsg = "OFFLINE"; return; }
         if (r.status >= 500) { if (g.latest) this.overMsg = "OFFLINE"; return; }
+        const err = (r.data && r.data.message) || "";
+        if (!r.ok && /too fast/.test(err) && !/real/.test(err)) {
+          if (g.latest) this.overMsg = "SAVING...";
+          setTimeout(() => this.flush(), 11000);    // one score per name every 10 seconds
+          return;
+        }
         this.pending.shift();                       // sent, or turned down for good
         this.savePending();
         if (g.latest) {
@@ -926,6 +948,7 @@ const menus = {
     optionRow("LINE CLEAR", "gravity", GRAVITY_OPTS, v => v.toUpperCase(), "CASCADE: BLOCKS FILL GAPS"),
     optionRow("DAS", "das", DAS_OPTS, ms, "DELAY BEFORE KEY REPEATS"),
     optionRow("ARR", "arr", ARR_OPTS, ms, "REPEAT SPEED WHEN HELD"),
+    optionRow("AUTO SAVE", "autoSave", [true, false], onOff, "SEND SCORE WHEN YOU LEAVE"),
     ["KEY BINDINGS", () => { scene = "keys"; menus.keys.sel = 0; }, false, null, "CHANGE KEYBOARD CONTROLS"],
     ["BACK", () => goTitle()],
   ] },
@@ -941,7 +964,7 @@ const menus = {
   pause: { sel: 0, items: [
     ["RESUME", () => { paused = false; }],
     [() => ({ all: "SOUND ON", sfx: "SFX ONLY", off: "MUTED" })[Sound.mode], () => Sound.cycle(), true],
-    ["QUIT",   () => goTitle()],
+    ["QUIT",   () => { Board.checkpoint(); goTitle(); }],
   ], back: () => { paused = false; } },
   over: { sel: 0, items: [
     ["RETRY", () => startGame()],
@@ -1047,6 +1070,7 @@ function startGame() {
   phase = "ready"; phaseT = 0; paused = false;
   clearRows = []; msg = null; newBest = false;
   gameMs = 0; pieces = 0; clearLog = []; finished = false; Board.overMsg = "";
+  gameId = Date.now(); Board.savedScore = 0; bestAtStart = localBest[mode];
   fallCells = []; chain = 0; clearLabel = "";
   particles = []; dropFx = null; lockFx = null; comboFx = null;
   scene = "game";
@@ -1392,17 +1416,24 @@ function finishClear() {
   spawn();
 }
 
+// remembers a game as this device's best for its mode; true when it beats the old best
+function keepBest(g) {
+  const val = g.mode === "sprint" ? g.ms : g.score;
+  if (localBest[g.mode] != null && !better(g.mode, val, localBest[g.mode])) return false;
+  localBest[g.mode] = val; saveLocalBest();
+  lsSet("stackfall-bestgame-" + g.mode, JSON.stringify(g));
+  if (g.mode === "marathon") { hi = g.score; saveHi(); }
+  return true;
+}
+
 function gameOver() {
   phase = "over"; phaseT = 0; cur = null;
   menus.over.sel = 0;
   const g = Board.lastGame = Board.record();
   if (countsForBoard(g)) {
+    keepBest(g);
     const val = mode === "sprint" ? g.ms : g.score;
-    if (localBest[mode] == null || better(mode, val, localBest[mode])) {
-      localBest[mode] = val; saveLocalBest(); newBest = true;
-      lsSet("stackfall-bestgame-" + mode, JSON.stringify(g));
-      if (mode === "marathon") { hi = score; saveHi(); }
-    }
+    newBest = bestAtStart == null || better(mode, val, bestAtStart);   // auto saves may have stored it already
     Board.submit(g);
   }
   clearHeld();
@@ -1481,7 +1512,7 @@ function activeMenu() {
 function press(a) {
   if (scene !== "game") return;
   if (a === "pause") {
-    if (phase !== "over") { paused = !paused; menus.pause.sel = 0; clearHeld(); Sound.play("pause"); }
+    if (phase !== "over") { paused = !paused; menus.pause.sel = 0; clearHeld(); Sound.play("pause"); if (paused) Board.checkpoint(); }
     return;
   }
   if (paused) return;
@@ -1657,8 +1688,9 @@ window.addEventListener("touchstart", () => { if (!isTouch) setTouch(true); }, {
 matchMedia("(pointer: coarse)").addEventListener("change", e => { if (e.matches && !isTouch) setTouch(true); });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && scene === "game" && phase !== "over") { paused = true; menus.pause.sel = 0; clearHeld(); }
+  if (document.hidden && scene === "game" && phase !== "over") { paused = true; menus.pause.sel = 0; clearHeld(); Board.checkpoint(); }
 });
+window.addEventListener("pagehide", () => Board.checkpoint());
 
 // ============================================================
 //  RENDER: TITLE / CONTROLS / CREDITS
