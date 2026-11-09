@@ -692,92 +692,199 @@ let hDir = 0, dasT = 0, arrT = 0;
 let hi = 0;
 try { hi = Number(localStorage.getItem("stackfall-hi")) || 0; } catch (e) {}
 function saveHi() { try { localStorage.setItem("stackfall-hi", String(hi)); } catch (e) {} }
-// lines/level of the best game, so the best can be sent to the leaderboard later (older bests have none)
-let hiStats = null;
-try { hiStats = JSON.parse(localStorage.getItem("stackfall-hi-stats") || "null"); } catch (e) {}
+// ---- game modes ----
+const MODES = ["marathon", "sprint", "ultra"];
+const MODE_NAMES = { marathon: "MARATHON", sprint: "SPRINT 40", ultra: "ULTRA 2:00" };
+const SPRINT_LINES = 40, ULTRA_MS = 120000;
+let mode = "marathon";
+let gameMs = 0, pieces = 0, clearLog = [], finished = false;
+const fmtTime = ms => {
+  const cs = Math.floor(ms / 10);
+  return Math.floor(cs / 6000) + ":" + String(Math.floor(cs / 100) % 60).padStart(2, "0") + "." + String(cs % 100).padStart(2, "0");
+};
 
-// ---- online leaderboard (Supabase; table + rules in supabase/leaderboard.sql) ----
-// The publishable key is meant to be public: the database only allows reading scores and adding new ones.
+// ---- online leaderboard (Supabase; rules in supabase/leaderboard.sql and leaderboard-v2.sql) ----
+// The publishable key is meant to be public: the database only allows reading scores and adding
+// new ones through submit_score(), which checks them.
 const SB_URL = "https://phmedxuneiivlsgauqkm.supabase.co/rest/v1";
 const SB_KEY = "sb_publishable_xEFTJrU5uKy4vtlfajb1Tg_6CYixOhK";
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const lsJson = (k, d) => { try { return JSON.parse(lsGet(k, "")) ?? d; } catch (e) { return d; } };
+
+// best result per mode on this device (sprint: fastest finish in ms, others: score)
+const localBest = lsJson("stackfall-bests", {});
+if (!localBest.marathon && hi) localBest.marathon = hi;
+const saveLocalBest = () => lsSet("stackfall-bests", JSON.stringify(localBest));
+const better = (m, a, b) => (m === "sprint" ? a < b : a > b);
+
+// a random secret that proves this device owns its name
+let secret = lsGet("stackfall-secret", "");
+if (!secret) {
+  try { secret = crypto.randomUUID().replace(/-/g, ""); }
+  catch (e) { secret = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join(""); }
+  lsSet("stackfall-secret", secret);
+}
+
+async function rpc(fn, body) {
+  const res = await fetch(SB_URL + "/rpc/" + fn, {
+    method: "POST",
+    headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  return { ok: res.ok, status: res.status, data };
+}
+
 const nameInput = document.getElementById("nameInput");
 const cleanName = v => v.toUpperCase().replace(/[^A-Z0-9 _-]/g, "").replace(/^ +/, "").slice(0, 12);
 nameInput.addEventListener("input", () => {
   const v = cleanName(nameInput.value);
   if (v !== nameInput.value) nameInput.value = v;
 });
+
 const Board = {
   name: lsGet("stackfall-name", ""),
-  rows: null, status: "", seq: 0,
-  prevScene: "title", nameDone: null,
-  pending: (() => { try { return JSON.parse(lsGet("stackfall-pending", "[]")) || []; } catch (e) { return []; } })(),
-  savePending() { lsSet("stackfall-pending", JSON.stringify(this.pending.slice(-20))); },
+  nameTaken: false,
+  mode: "marathon",
+  rows: null, me: null, status: "", seq: 0,
+  prevScene: "title", nameDone: null, nameMsg: "", busy: false,
+  overMsg: "", lastGame: null,
+  pending: lsJson("stackfall-pending2", []),
+  savePending() { lsSet("stackfall-pending2", JSON.stringify(this.pending.slice(-20))); },
+
+  // 'ok' | 'taken' | 'invalid' | 'offline'
+  async claim(n) {
+    try {
+      const r = await rpc("claim_name", { p_name: n, p_secret: secret });
+      if (!r.ok) return r.status >= 500 ? "offline" : "invalid";
+      if (r.data === "ok") lsSet("stackfall-claimed", n);
+      return r.data;
+    } catch (e) { return "offline"; }
+  },
+
   // opens the name screen; done(true) once a name is saved, done(false) on cancel
   askName(done) {
-    this.prevScene = scene; this.nameDone = done || null;
+    this.prevScene = scene; this.nameDone = done || null; this.nameMsg = "";
     scene = "name";
     clearHeld();
     resize();
     nameInput.value = this.name;
     try { nameInput.focus({ preventScroll: true }); } catch (e) {}
   },
-  finishName(ok) {
-    const n = cleanName(nameInput.value).trim();
+  closeName(saved) {
     nameInput.blur();
     scene = this.prevScene;
     resize();
-    const saved = ok && !!n;
-    if (saved) {
-      this.name = n; lsSet("stackfall-name", n);
-      // send the best already on this device (needs its lines/level for the server's sanity check)
-      if (hi > 0 && hiStats) this.submit(hi, hiStats.lines, hiStats.level);
-    }
     Sound.play(saved ? "select" : "pause");
     const cb = this.nameDone; this.nameDone = null;
     if (cb) cb(saved);
   },
+  async finishName(ok) {
+    if (this.busy) return;
+    const n = cleanName(nameInput.value).trim();
+    if (!ok || !n) { this.closeName(false); return; }
+    this.busy = true; this.nameMsg = "CHECKING...";
+    const r = await this.claim(n);
+    this.busy = false;
+    if (scene !== "name") return;
+    if (r === "taken") { this.nameMsg = "NAME TAKEN - TRY ANOTHER"; Sound.play("pause"); return; }
+    if (r === "invalid") { this.nameMsg = "TRY A DIFFERENT NAME"; Sound.play("pause"); return; }
+    this.nameMsg = "";
+    this.name = n; this.nameTaken = false;
+    lsSet("stackfall-name", n);
+    // bests from before the name was set (saved with their game record) go up now
+    for (const m of MODES) { const g = lsJson("stackfall-bestgame-" + m, null); if (g) this.queue(g); }
+    this.flush();
+    this.closeName(true);
+  },
+
   async load() {
-    const id = ++this.seq;
-    this.status = "LOADING..."; this.rows = null;
+    const id = ++this.seq, m = this.mode;
+    this.status = "LOADING..."; this.rows = null; this.me = null;
+    const order = m === "sprint" ? "ms.asc" : "score.desc";
     try {
-      const res = await fetch(SB_URL + "/best_scores?select=name,score&order=score.desc&limit=60", { headers: { apikey: SB_KEY } });
+      const res = await fetch(SB_URL + "/best_scores?select=name,score,ms,lines,level&mode=eq." + m +
+        "&order=" + order + "&limit=10", { headers: { apikey: SB_KEY } });
       if (!res.ok) throw new Error(res.status);
-      let rows = await res.json();
-      // a name can have rows from older group-code scores: keep only its best
-      const seen = new Set();
-      rows = rows.filter(r => !seen.has(r.name) && seen.add(r.name)).slice(0, 10);
+      const rows = await res.json();
       if (id !== this.seq) return;
       this.rows = rows; this.status = rows.length ? "" : "NO SCORES YET";
+      // your own place when you're not in the top 10
+      if (this.name && !rows.some(r => r.name === this.name)) {
+        const r = await rpc("player_rank", { p_mode: m, p_name: this.name });
+        if (id === this.seq && r.ok && r.data) this.me = r.data;
+      }
     } catch (e) {
       if (id === this.seq) this.status = "OFFLINE - TRY LATER";
     }
   },
-  submit(score, lines, level) {
-    if (!this.name || score <= 0) return;
-    this.pending.push({ name: this.name, grp: "", score, lines, level: Math.min(level, 1000) });
+
+  // the finished game, ready to send (everything the server needs to check it)
+  record() {
+    return { mode, score, lines, level, ms: Math.round(gameMs), pieces, log: clearLog.slice() };
+  },
+  queue(g) {
+    this.pending.push(g);
     this.savePending();
+  },
+  submit(g) {
+    if (!this.name || this.nameTaken) return;
+    this.overMsg = "SENDING...";
+    this.queue(Object.assign({ latest: true }, g));
     this.flush();
   },
   async flush() {
-    while (this.pending.length) {
-      try {
-        const res = await fetch(SB_URL + "/scores", {
-          method: "POST",
-          headers: { apikey: SB_KEY, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify(this.pending[0]),
-        });
-        if (res.status >= 500) return;           // server trouble: keep it for later
-      } catch (e) { return; }                     // offline: keep it for later
-      this.pending.shift();                       // sent, or rejected for good
-      this.savePending();
-    }
+    if (this.flushing) return;
+    this.flushing = true;
+    try {
+      while (this.pending.length) {
+        const g = this.pending[0];
+        let r;
+        try {
+          r = await rpc("submit_score", {
+            p_name: this.name, p_secret: secret, p_mode: g.mode, p_score: g.score, p_lines: g.lines,
+            p_level: g.level, p_ms: g.ms, p_pieces: g.pieces, p_log: g.log,
+          });
+        } catch (e) { if (g.latest) this.overMsg = "OFFLINE"; return; }
+        if (r.status >= 500) { if (g.latest) this.overMsg = "OFFLINE"; return; }
+        this.pending.shift();                       // sent, or turned down for good
+        this.savePending();
+        if (g.latest) {
+          const msg = (r.data && r.data.message) || "";
+          if (/name taken/.test(msg)) this.nameTaken = true;
+          this.overMsg = r.ok && r.data ? "RANK #" + r.data.rank : /too fast/.test(msg) && !/real/.test(msg) ? "WAIT A BIT" : "NOT SAVED";
+        }
+      }
+    } finally { this.flushing = false; }
   },
-  open() { scene = "board"; menus.board.sel = 0; resize(); this.load(); },
+  open() { scene = "board"; menus.board.sel = 0; this.mode = mode; resize(); this.load(); },
 };
 window.addEventListener("online", () => Board.flush());
-setTimeout(() => Board.flush(), 1500);
+setTimeout(async () => {
+  // names set before names were protected get claimed on the next visit
+  if (Board.name && lsGet("stackfall-claimed", "") !== Board.name) {
+    const r = await Board.claim(Board.name);
+    if (r === "taken") Board.nameTaken = true;
+  }
+  Board.flush();
+}, 1500);
+
+// ---- share a result through the phone's share menu (or copy it)
+async function shareResult() {
+  const url = location.origin + location.pathname;
+  const g = Board.lastGame || { mode: "marathon", score: 0, ms: 0 };
+  const what = g.mode === "sprint" ? "cleared 40 lines in " + fmtTime(g.ms)
+    : g.mode === "ultra" ? "scored " + g.score.toLocaleString("en-US") + " in 2 minutes"
+    : "scored " + g.score.toLocaleString("en-US");
+  const text = "I " + what + " in Stackfall. Can you beat me?";
+  try {
+    if (navigator.share) { await navigator.share({ title: "Stackfall", text, url }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  try { await navigator.clipboard.writeText(text + " " + url); Board.overMsg = "LINK COPIED"; }
+  catch (e) { Board.overMsg = "CAN'T SHARE"; }
+}
 
 // Menu items are [label, onChoose, silent?, onLeftRight?, description?].
 // A settings row: LEFT/RIGHT step through `options`, Enter or a tap steps forward.
@@ -803,7 +910,7 @@ function resetKeys() {
 
 const menus = {
   title: { sel: 0, items: [
-    ["SINGLE",   () => startGame()],
+    ["PLAY",     () => { scene = "modes"; menus.modes.sel = MODES.indexOf(mode); }],
     ["LEADERBOARD", () => Board.open()],
     ["CONTROLS", () => { scene = "controls"; }],
     ["SCORING",  () => { scene = "scoring"; }],
@@ -836,18 +943,26 @@ const menus = {
     [() => ({ all: "SOUND ON", sfx: "SFX ONLY", off: "MUTED" })[Sound.mode], () => Sound.cycle(), true],
     ["QUIT",   () => goTitle()],
   ], back: () => { paused = false; } },
+  modes: { sel: 0, back: () => goTitle(), items: [
+    ["MARATHON",   () => { mode = "marathon"; startGame(); }, false, null, "PLAY UNTIL YOU TOP OUT"],
+    ["SPRINT 40",  () => { mode = "sprint"; startGame(); }, false, null, "CLEAR 40 LINES FAST"],
+    ["ULTRA 2:00", () => { mode = "ultra"; startGame(); }, false, null, "MOST POINTS IN 2 MINUTES"],
+    ["BACK", () => goTitle()],
+  ] },
   over: { sel: 0, items: [
     ["RETRY", () => startGame()],
-    [() => (Board.name || score <= 0 ? "LEADERBOARD" : "SAVE SCORE"), () => {
-      if (!Board.name && score > 0) {
-        Board.askName(ok => { if (ok) { Board.submit(score, lines, level); Board.open(); } });
+    [() => (canSaveLast() ? "SAVE SCORE" : "LEADERBOARD"), () => {
+      if (canSaveLast()) {
+        Board.askName(ok => { if (ok) { Board.submit(Board.lastGame); Board.open(); } });
       } else Board.open();
     }],
+    ["SHARE", () => shareResult()],
     ["MENU",  () => goTitle()],
   ], back: () => goTitle() },
   board: { sel: 0, back: () => goTitle(), items: [
-    [() => (Board.name ? "NAME: " + Board.name : "ENTER YOUR NAME"), () => Board.askName(() => Board.load()),
-      false, null, "YOUR NAME ON THE BOARD"],
+    [() => "MODE: " + MODE_NAMES[Board.mode], () => switchBoardMode(1), true, d => switchBoardMode(d), "LEFT/RIGHT: CHANGE MODE"],
+    [() => (Board.nameTaken ? "NAME TAKEN: CHANGE" : Board.name ? "NAME: " + Board.name : "ENTER YOUR NAME"),
+      () => Board.askName(() => Board.load()), false, null, "YOUR NAME ON THE BOARD"],
     ["BACK", () => goTitle()],
   ] },
   name: { sel: 0, items: [
@@ -903,6 +1018,15 @@ window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); instal
 window.addEventListener("appinstalled", () => { installEvt = null; syncInstallItem(); });
 syncInstallItem();
 
+// a finished game that counts for the board: points scored, and a sprint must reach 40 lines
+const countsForBoard = g => !!g && g.score > 0 && (g.mode !== "sprint" || g.lines >= SPRINT_LINES);
+const canSaveLast = () => !Board.name && countsForBoard(Board.lastGame);
+function switchBoardMode(d) {
+  Board.mode = MODES[(MODES.indexOf(Board.mode) + d + MODES.length) % MODES.length];
+  Sound.play("menu");
+  Board.load();
+}
+
 function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); resize(); }
 
 function clearHeld() {
@@ -934,6 +1058,7 @@ function startGame() {
   lastRotate = false; pendingSpin = null;
   phase = "ready"; phaseT = 0; paused = false;
   clearRows = []; msg = null; newBest = false;
+  gameMs = 0; pieces = 0; clearLog = []; finished = false; Board.overMsg = "";
   fallCells = []; chain = 0; clearLabel = "";
   particles = []; dropFx = null; lockFx = null; comboFx = null;
   scene = "game";
@@ -1201,6 +1326,7 @@ function lock(fromHardDrop = false) {
     if (r < 0) toppedOut = true; else { board[r][c] = cur.id; placed.push([r, c]); }
   }
   cur = null;
+  pieces++;
   if (toppedOut) { gameOver(); return; }
   if (!reduced()) lockFx = { cells: placed, t: 0 };     // brief white flash where the piece landed
   const full = fullRows();
@@ -1250,6 +1376,7 @@ function finishClear() {
   if (perfect) pts += (nk === 4 && isB2B ? B2B_PERFECT_QUAD : PERFECT_PTS[nk]) * level;
 
   const oldLevel = level;
+  clearLog.push([n, pts, level, combo, chain]);     // the leaderboard checks every clear against the rules
   score += pts;
   lines += n;
   level = 1 + Math.floor(lines / 10);
@@ -1270,6 +1397,7 @@ function finishClear() {
 
   pendingSpin = null;
   clearRows = [];
+  if (mode === "sprint" && lines >= SPRINT_LINES) { finished = true; gameOver(); return; }
   if (cascade && startFall()) { phase = "fall"; phaseT = 0; return; }
   chain = 0;
   phase = "play"; phaseT = 0;
@@ -1279,8 +1407,16 @@ function finishClear() {
 function gameOver() {
   phase = "over"; phaseT = 0; cur = null;
   menus.over.sel = 0;
-  if (score > hi) { hi = score; newBest = true; saveHi(); hiStats = { lines, level }; lsSet("stackfall-hi-stats", JSON.stringify(hiStats)); }
-  Board.submit(score, lines, level);
+  const g = Board.lastGame = Board.record();
+  if (countsForBoard(g)) {
+    const val = mode === "sprint" ? g.ms : g.score;
+    if (localBest[mode] == null || better(mode, val, localBest[mode])) {
+      localBest[mode] = val; saveLocalBest(); newBest = true;
+      lsSet("stackfall-bestgame-" + mode, JSON.stringify(g));
+      if (mode === "marathon") { hi = score; saveHi(); }
+    }
+    Board.submit(g);
+  }
   clearHeld();
   Sound.syncMusic(false);
   Sound.play("gameover");
@@ -1310,6 +1446,10 @@ function update(dt) {
   else if (phase === "clear" && phaseT >= 320) finishClear();
   else if (phase === "fall" && phaseT >= fallDur) finishFall();
   else if (phase === "play") stepPlay(dt);
+  if (phase !== "ready" && phase !== "over") {
+    gameMs += dt;
+    if (mode === "ultra" && gameMs >= ULTRA_MS) { gameMs = ULTRA_MS; finished = true; gameOver(); }
+  }
 }
 
 function stepPlay(dt) {
@@ -1344,6 +1484,7 @@ function activeMenu() {
   if (scene === "settings") return menus.settings;
   if (scene === "keys") return menus.keys;
   if (scene === "board") return menus.board;
+  if (scene === "modes") return menus.modes;
   if (scene !== "game") return null;
   if (paused) return menus.pause;
   if (phase === "over" && phaseT >= OVER_MENU_DELAY) return menus.over;
@@ -1630,20 +1771,37 @@ function drawMenuScreen(title, menu, top, gap, hint, foot) {
 function drawBoard() {
   drawStars(titleStars, 0, 0, "#7fd0ff");
   drawScreenFrame();
-  text("LEADERBOARD", 128, 12, "#ffd860", "center");
-  dottedLine(24, 24, 208);
-  text("TOP PLAYERS", 128, 30, "#9ec0ff", "center");
+  text("LEADERBOARD", 128, 10, "#ffd860", "center");
+  dottedLine(24, 21, 208);
+  const sprint = Board.mode === "sprint";
+  // columns: rank, name, score (or time), lines, level
+  const head = "#4f62b0";
+  text("#", 24, 28, head, "right");
+  text("NAME", 30, 28, head);
+  text(sprint ? "TIME" : "SCORE", sprint ? 244 : 186, 28, head, "right");
+  if (!sprint) { text("LN", 216, 28, head, "right"); text("LV", 244, 28, head, "right"); }
+  const row = (r, rank, y, me) => {
+    const c = me ? "#ffd860" : rank === 1 ? "#ffffff" : "#c8d6ff";
+    text(String(rank), 24, y, "#7f95e0", "right");
+    text(r.name, 30, y, c);
+    if (sprint) text(fmtTime(r.ms || 0), 244, y, c, "right");
+    else {
+      text(String(r.score), 186, y, c, "right");
+      text(String(r.lines), 216, y, c, "right");
+      text(String(r.level), 244, y, c, "right");
+    }
+  };
   if (Board.status) text(Board.status, 128, 80, "#8ab4ff", "center");
-  (Board.rows || []).forEach((r, i) => {
-    const y = 44 + i * 10;
-    const me = r.name === Board.name;
-    const c = me ? "#ffd860" : i === 0 ? "#ffffff" : "#c8d6ff";
-    text(String(i + 1).padStart(2, " "), 20, y, "#7f95e0");
-    text(r.name, 44, y, c);
-    text(String(r.score), 236, y, c, "right");
-  });
-  drawMenu(menus.board, 128, 160, 13);
+  (Board.rows || []).forEach((r, i) => row(r, i + 1, 40 + i * 10, r.name === Board.name));
+  if (Board.me) { dottedLine(24, 141, 208); row(Object.assign({ name: Board.name }, Board.me), Board.me.rank, 145, true); }
+  drawMenu(menus.board, 128, 160, 12);
   text(isTouch ? "TAP A ROW" : "ENTER: CHOOSE  ESC: BACK", 128, 204, "#4f62b0", "center");
+}
+
+function drawModes() {
+  drawMenuScreen("CHOOSE MODE", menus.modes, 56, 18, "", "ENTER: PLAY  ESC: BACK");
+  const m = MODES[menus.modes.sel], b = m && localBest[m];
+  if (b != null && m) text("YOUR BEST " + (m === "sprint" ? fmtTime(b) : b), 128, 190, "#ffd860", "center");
 }
 
 // name entry, drawn like the rest of the game; the letters come from the hidden #nameInput
@@ -1662,7 +1820,8 @@ function drawNameEntry() {
   text(v, 128, 77, "#ffffff", "center");
   if (v.length < 12 && Math.floor(now / 400) % 2 === 0) rect(128 + Math.ceil(w / 2) + 1, 84, 7, 2, "#ff5aa8");
   text(v.length + "/12", 212, 98, "#4f62b0", "right");
-  text(isTouch ? "TAP THE BOX TO TYPE" : "TYPE YOUR NAME", 128, 112, "#8ab4ff", "center");
+  if (Board.nameMsg) text(Board.nameMsg, 128, 112, Board.busy ? "#8ab4ff" : "#ff6a80", "center");
+  else text(isTouch ? "TAP THE BOX TO TYPE" : "TYPE YOUR NAME", 128, 112, "#8ab4ff", "center");
   menus.name.sel = v.trim() ? 0 : 1;
   drawMenu(menus.name, 128, 140, 16);
   text(isTouch ? "" : "ENTER: OK  ESC: CANCEL", 128, 204, "#4f62b0", "center");
@@ -1876,14 +2035,26 @@ function drawGame() {
     if (phaseT < 800) { if (blink(160)) text("READY", cx, 100 + oy, "#ffd860", "center"); }
     else text("GO!", cx, 100 + oy, "#5cf08c", "center");
   } else if (phase === "over" && phaseT >= OVER_MENU_DELAY) {
-    overlayPanel(64 + oy, newBest ? 100 : 86);
-    text("GAME", cx, 74 + oy, "#ff6a80", "center");
-    text("OVER", cx, 86 + oy, "#ff6a80", "center");
-    let y = 104 + oy;
-    if (newBest) { if (blink(250)) text("NEW BEST", cx, y, "#ffd860", "center"); y += 14; }
-    drawMenu(menus.over, cx, y, 14);
+    const extra = (newBest ? 12 : 0) + (Board.overMsg ? 12 : 0);
+    overlayPanel(56 + oy, 112 + extra);
+    const [t1, t2, c] = !finished ? ["GAME", "OVER", "#ff6a80"]
+      : mode === "sprint" ? ["FINISH!", fmtTime(gameMs), "#5cf08c"]
+      : ["TIME UP!", String(score), "#5cf08c"];
+    text(t1, cx, 66 + oy, c, "center");
+    text(t2, cx, 78 + oy, mode === "marathon" || !finished ? c : "#ffffff", "center");
+    let y = 96 + oy;
+    if (newBest) { if (blink(250)) text("NEW BEST", cx, y, "#ffd860", "center"); y += 12; }
+    if (Board.overMsg) { text(Board.overMsg, cx, y, "#5cf0e0", "center"); y += 12; }
+    drawMenu(menus.over, cx, y + 2, 14);
   }
   if (!paused) drawComboFx();
+}
+
+// the stat under HOLD: best score in marathon, the clock in timed modes
+function hudStat() {
+  if (mode === "sprint") return ["TIME", fmtTime(gameMs)];
+  if (mode === "ultra") return ["LEFT", fmtTime(Math.max(0, ULTRA_MS - gameMs))];
+  return ["BEST", String(Math.max(hi, score))];
 }
 
 // side panels: hold + best + score messages on the left, next queue + stats on the right
@@ -1893,8 +2064,9 @@ function drawHudWide() {
   drawBox(6, 18, 58, 40);
   drawPreview(hold, 35, 38, 10, holdUsed ? 0.4 : 1);
   dottedLine(6, 66, 58);
-  text("BEST", 8, 74, "#9ec0ff");
-  text(String(Math.max(hi, score)), 63, 86, "#ffffff", "right");
+  const [hl, hv] = hudStat();
+  text(hl, 8, 74, "#9ec0ff");
+  text(hv, 63, 86, "#ffffff", "right");
   dottedLine(6, 100, 58);
 
   if (msg && !paused) {
@@ -1921,7 +2093,7 @@ function drawHudWide() {
   }
   dottedLine(RX, 116, 58);
   text("LINES", RX + 2, 124, "#9ec0ff");
-  text(String(lines), RX + 57, 136, "#ffffff", "right");
+  text(mode === "sprint" ? lines + "/" + SPRINT_LINES : String(lines), RX + 57, 136, "#ffffff", "right");
   text("LEVEL", RX + 2, 152, "#9ec0ff");
   text(String(level), RX + 57, 164, "#ffffff", "right");
   text("SCORE", RX + 2, 180, "#9ec0ff");
@@ -1945,8 +2117,9 @@ function drawHudTall(cx) {
   text("SCORE", 80, 3, "#9ec0ff", "center");
   text(String(shownScore), 80, 13, "#ffffff", "center");
   text("LV " + level, 80, 26, "#9ec0ff", "center");
-  text("LN " + lines, 80, 36, "#9ec0ff", "center");
-  text("HI " + Math.max(hi, score), 80, 46, "#6a80d0", "center");
+  text("LN " + (mode === "sprint" ? lines + "/" + SPRINT_LINES : lines), 80, 36, "#9ec0ff", "center");
+  const [hl, hv] = hudStat();
+  text((hl === "BEST" ? "HI" : hl === "TIME" ? "" : hl) + " " + hv, 80, 46, "#6a80d0", "center");
 
   // points and bonuses of the last clear, over the top of the board (the clear banner and
   // combo tag already name the clear itself)
@@ -1973,6 +2146,7 @@ function render() {
   else if (scene === "credits") drawInfoScreen("CREDITS", CREDITS, false);
   else if (scene === "board") drawBoard();
   else if (scene === "name") drawNameEntry();
+  else if (scene === "modes") drawModes();
   else if (scene === "install") drawInfoScreen("INSTALL APP", INSTALL_HELP, false, 14, 36);
   else drawGame();
 }
