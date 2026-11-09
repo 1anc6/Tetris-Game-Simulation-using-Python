@@ -719,6 +719,7 @@ const Board = {
     this.prevScene = scene; this.nameDone = done || null;
     scene = "name";
     clearHeld();
+    resize();
     nameInput.value = this.name;
     try { nameInput.focus({ preventScroll: true }); } catch (e) {}
   },
@@ -726,6 +727,7 @@ const Board = {
     const n = cleanName(nameInput.value).trim();
     nameInput.blur();
     scene = this.prevScene;
+    resize();
     const saved = ok && !!n;
     if (saved) {
       this.name = n; lsSet("stackfall-name", n);
@@ -772,7 +774,7 @@ const Board = {
       this.savePending();
     }
   },
-  open() { scene = "board"; menus.board.sel = 0; this.load(); },
+  open() { scene = "board"; menus.board.sel = 0; resize(); this.load(); },
 };
 window.addEventListener("online", () => Board.flush());
 setTimeout(() => Board.flush(), 1500);
