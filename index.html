@@ -910,7 +910,7 @@ function resetKeys() {
 
 const menus = {
   title: { sel: 0, items: [
-    ["PLAY",     () => { scene = "modes"; menus.modes.sel = MODES.indexOf(mode); }],
+    ["PLAY",     () => { mode = "marathon"; startGame(); }],
     ["LEADERBOARD", () => Board.open()],
     ["CONTROLS", () => { scene = "controls"; }],
     ["SCORING",  () => { scene = "scoring"; }],
@@ -943,12 +943,6 @@ const menus = {
     [() => ({ all: "SOUND ON", sfx: "SFX ONLY", off: "MUTED" })[Sound.mode], () => Sound.cycle(), true],
     ["QUIT",   () => goTitle()],
   ], back: () => { paused = false; } },
-  modes: { sel: 0, back: () => goTitle(), items: [
-    ["MARATHON",   () => { mode = "marathon"; startGame(); }, false, null, "PLAY UNTIL YOU TOP OUT"],
-    ["SPRINT 40",  () => { mode = "sprint"; startGame(); }, false, null, "CLEAR 40 LINES FAST"],
-    ["ULTRA 2:00", () => { mode = "ultra"; startGame(); }, false, null, "MOST POINTS IN 2 MINUTES"],
-    ["BACK", () => goTitle()],
-  ] },
   over: { sel: 0, items: [
     ["RETRY", () => startGame()],
     [() => (canSaveLast() ? "SAVE SCORE" : "LEADERBOARD"), () => {
@@ -960,7 +954,6 @@ const menus = {
     ["MENU",  () => goTitle()],
   ], back: () => goTitle() },
   board: { sel: 0, back: () => goTitle(), items: [
-    [() => "MODE: " + MODE_NAMES[Board.mode], () => switchBoardMode(1), true, d => switchBoardMode(d), "LEFT/RIGHT: CHANGE MODE"],
     [() => (Board.nameTaken ? "NAME TAKEN: CHANGE" : Board.name ? "NAME: " + Board.name : "ENTER YOUR NAME"),
       () => Board.askName(() => Board.load()), false, null, "YOUR NAME ON THE BOARD"],
     ["BACK", () => goTitle()],
@@ -1021,11 +1014,6 @@ syncInstallItem();
 // a finished game that counts for the board: points scored, and a sprint must reach 40 lines
 const countsForBoard = g => !!g && g.score > 0 && (g.mode !== "sprint" || g.lines >= SPRINT_LINES);
 const canSaveLast = () => !Board.name && countsForBoard(Board.lastGame);
-function switchBoardMode(d) {
-  Board.mode = MODES[(MODES.indexOf(Board.mode) + d + MODES.length) % MODES.length];
-  Sound.play("menu");
-  Board.load();
-}
 
 function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); resize(); }
 
@@ -1484,7 +1472,6 @@ function activeMenu() {
   if (scene === "settings") return menus.settings;
   if (scene === "keys") return menus.keys;
   if (scene === "board") return menus.board;
-  if (scene === "modes") return menus.modes;
   if (scene !== "game") return null;
   if (paused) return menus.pause;
   if (phase === "over" && phaseT >= OVER_MENU_DELAY) return menus.over;
@@ -1794,15 +1781,10 @@ function drawBoard() {
   if (Board.status) text(Board.status, 128, 80, "#8ab4ff", "center");
   (Board.rows || []).forEach((r, i) => row(r, i + 1, 40 + i * 10, r.name === Board.name));
   if (Board.me) { dottedLine(24, 141, 208); row(Object.assign({ name: Board.name }, Board.me), Board.me.rank, 145, true); }
-  drawMenu(menus.board, 128, 160, 12);
+  drawMenu(menus.board, 128, 166, 13);
   text(isTouch ? "TAP A ROW" : "ENTER: CHOOSE  ESC: BACK", 128, 204, "#4f62b0", "center");
 }
 
-function drawModes() {
-  drawMenuScreen("CHOOSE MODE", menus.modes, 56, 18, "", "ENTER: PLAY  ESC: BACK");
-  const m = MODES[menus.modes.sel], b = m && localBest[m];
-  if (b != null && m) text("YOUR BEST " + (m === "sprint" ? fmtTime(b) : b), 128, 190, "#ffd860", "center");
-}
 
 // name entry, drawn like the rest of the game; the letters come from the hidden #nameInput
 function drawNameEntry() {
@@ -2146,7 +2128,6 @@ function render() {
   else if (scene === "credits") drawInfoScreen("CREDITS", CREDITS, false);
   else if (scene === "board") drawBoard();
   else if (scene === "name") drawNameEntry();
-  else if (scene === "modes") drawModes();
   else if (scene === "install") drawInfoScreen("INSTALL APP", INSTALL_HELP, false, 14, 36);
   else drawGame();
 }
