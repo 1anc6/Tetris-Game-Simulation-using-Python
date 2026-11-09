@@ -895,6 +895,7 @@ const Board = {
           r = await rpc("submit_score", {
             p_name: this.name, p_secret: secret, p_mode: g.mode, p_score: g.score, p_lines: g.lines,
             p_level: g.level, p_ms: g.ms, p_pieces: g.pieces, p_log: g.log,
+            p_gid: g.gid || null,                   // same game saved again updates its row, never adds one
           });
         } catch (e) { if (g.latest) this.overMsg = "OFFLINE"; return; }
         if (r.status >= 500) { if (g.latest) this.overMsg = "OFFLINE"; return; }
