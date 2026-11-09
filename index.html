@@ -825,6 +825,7 @@ const Board = {
     // bests from before the name was set (saved with their game record) go up now
     for (const m of MODES) { const g = lsJson("stackfall-bestgame-" + m, null); if (g) this.queue(g); }
     this.flush();
+    this.syncBest();
     this.closeName(true);
   },
 
@@ -839,10 +840,12 @@ const Board = {
       const rows = await res.json();
       if (id !== this.seq) return;
       this.rows = rows; this.status = rows.length ? "" : "NO SCORES YET";
+      const mine = rows.find(r => r.name === this.name);
+      if (mine && !this.nameTaken) this.setBest(m, mine.score);
       // your own place when you're not in the top 10
       if (this.name && !rows.some(r => r.name === this.name)) {
         const r = await rpc("player_rank", { p_mode: m, p_name: this.name });
-        if (id === this.seq && r.ok && r.data) this.me = r.data;
+        if (id === this.seq && r.ok && r.data) { this.me = r.data; if (!this.nameTaken) this.setBest(m, r.data.score); }
       }
     } catch (e) {
       if (id === this.seq) this.status = "OFFLINE - TRY LATER";
@@ -897,6 +900,7 @@ const Board = {
         }
         this.pending.shift();                       // sent, or turned down for good
         this.savePending();
+        if (r.ok && r.data) this.setBest(g.mode, r.data.score);
         if (g.latest) {
           const msg = (r.data && r.data.message) || "";
           if (/name taken/.test(msg)) this.nameTaken = true;
@@ -906,6 +910,22 @@ const Board = {
     } finally { this.flushing = false; }
   },
   open() { scene = "board"; menus.board.sel = 0; this.mode = mode; resize(); this.load(); },
+
+  // HI follows the leaderboard: the player's best there (plus any game still waiting to be sent)
+  setBest(m, best) {
+    if (m !== "marathon" || !(best > 0)) return;
+    const waiting = this.pending.filter(g => g.mode === m).reduce((a, g) => Math.max(a, g.score), 0);
+    const v = Math.max(best, waiting);
+    localBest[m] = v; saveLocalBest();
+    hi = v; saveHi();
+  },
+  async syncBest() {
+    if (!this.name || this.nameTaken) return;
+    try {
+      const r = await rpc("player_rank", { p_mode: "marathon", p_name: this.name });
+      if (r.ok && r.data) this.setBest("marathon", r.data.score);
+    } catch (e) {}
+  },
 };
 window.addEventListener("online", () => Board.flush());
 setTimeout(async () => {
@@ -915,6 +935,7 @@ setTimeout(async () => {
     if (r === "taken") Board.nameTaken = true;
   }
   Board.flush();
+  Board.syncBest();
 }, 1500);
 
 // ---- share a result through the phone's share menu (or copy it)
