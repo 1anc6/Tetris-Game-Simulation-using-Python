@@ -93,6 +93,10 @@
 </head>
 <body>
   <canvas id="screen" width="256" height="224" aria-label="Stackfall game screen"></canvas>
+  <!-- invisible: only here to bring up the phone keyboard for the name screen, which is drawn on the canvas -->
+  <input id="nameInput" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false"
+    enterkeyhint="done" aria-label="Leaderboard name"
+    style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;pointer-events:none" />
 
   <div class="pad" id="padL">
     <button data-act="left" class="big" aria-label="Move left">&#x25C0;&#xFE0E;</button>
@@ -695,40 +699,44 @@ const SB_URL = "https://phmedxuneiivlsgauqkm.supabase.co/rest/v1";
 const SB_KEY = "sb_publishable_xEFTJrU5uKy4vtlfajb1Tg_6CYixOhK";
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const nameInput = document.getElementById("nameInput");
+const cleanName = v => v.toUpperCase().replace(/[^A-Z0-9 _-]/g, "").replace(/^ +/, "").slice(0, 12);
+nameInput.addEventListener("input", () => {
+  const v = cleanName(nameInput.value);
+  if (v !== nameInput.value) nameInput.value = v;
+});
 const Board = {
   name: lsGet("stackfall-name", ""),
-  group: lsGet("stackfall-group", ""),
-  view: lsGet("stackfall-group", "") ? "group" : "all",
   rows: null, status: "", seq: 0,
+  prevScene: "title", nameDone: null,
   pending: (() => { try { return JSON.parse(lsGet("stackfall-pending", "[]")) || []; } catch (e) { return []; } })(),
   savePending() { lsSet("stackfall-pending", JSON.stringify(this.pending.slice(-20))); },
-  askName() {
-    const v = window.prompt("Your leaderboard name (up to 12 letters/numbers):", this.name);
-    if (v == null) return false;
-    const n = v.toUpperCase().replace(/[^A-Z0-9 _-]/g, "").trim().slice(0, 12);
-    if (!n) return false;
-    this.name = n; lsSet("stackfall-name", n);
-    return true;
+  // opens the name screen; done(true) once a name is saved, done(false) on cancel
+  askName(done) {
+    this.prevScene = scene; this.nameDone = done || null;
+    scene = "name";
+    clearHeld();
+    nameInput.value = this.name;
+    try { nameInput.focus({ preventScroll: true }); } catch (e) {}
   },
-  askGroup() {
-    const v = window.prompt("Friend group code. Everyone who types the same code shares a board.\nLeave empty to leave the group.", this.group);
-    if (v == null) return;
-    this.group = v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
-    lsSet("stackfall-group", this.group);
-    this.view = this.group ? "group" : "all";
-    this.load();
+  finishName(ok) {
+    const n = cleanName(nameInput.value).trim();
+    nameInput.blur();
+    scene = this.prevScene;
+    const saved = ok && !!n;
+    if (saved) { this.name = n; lsSet("stackfall-name", n); }
+    Sound.play(saved ? "select" : "pause");
+    const cb = this.nameDone; this.nameDone = null;
+    if (cb) cb(saved);
   },
   async load() {
     const id = ++this.seq;
     this.status = "LOADING..."; this.rows = null;
-    const q = this.view === "group" && this.group
-      ? "&grp=eq." + this.group + "&limit=10"
-      : "&limit=60";
     try {
-      const res = await fetch(SB_URL + "/best_scores?select=name,score&order=score.desc" + q, { headers: { apikey: SB_KEY } });
+      const res = await fetch(SB_URL + "/best_scores?select=name,score&order=score.desc&limit=60", { headers: { apikey: SB_KEY } });
       if (!res.ok) throw new Error(res.status);
       let rows = await res.json();
-      // everyone view: a name can appear once per group, keep only its best
+      // a name can have rows from older group-code scores: keep only its best
       const seen = new Set();
       rows = rows.filter(r => !seen.has(r.name) && seen.add(r.name)).slice(0, 10);
       if (id !== this.seq) return;
@@ -739,7 +747,7 @@ const Board = {
   },
   submit(score, lines, level) {
     if (!this.name || score <= 0) return;
-    this.pending.push({ name: this.name, grp: this.group, score, lines, level: Math.min(level, 1000) });
+    this.pending.push({ name: this.name, grp: "", score, lines, level: Math.min(level, 1000) });
     this.savePending();
     this.flush();
   },
@@ -822,17 +830,20 @@ const menus = {
   over: { sel: 0, items: [
     ["RETRY", () => startGame()],
     [() => (Board.name || score <= 0 ? "LEADERBOARD" : "SAVE SCORE"), () => {
-      if (!Board.name && score > 0 && Board.askName()) Board.submit(score, lines, level);
-      Board.open();
+      if (!Board.name && score > 0) {
+        Board.askName(ok => { if (ok) { Board.submit(score, lines, level); Board.open(); } });
+      } else Board.open();
     }],
     ["MENU",  () => goTitle()],
   ], back: () => goTitle() },
   board: { sel: 0, back: () => goTitle(), items: [
-    [() => "SHOW: " + (Board.view === "group" ? "FRIENDS" : "EVERYONE"), () => toggleBoardView(), true,
-      () => toggleBoardView(), "FRIENDS = YOUR GROUP CODE"],
-    [() => "NAME: " + (Board.name || "-"), () => Board.askName(), false, null, "YOUR NAME ON THE BOARD"],
-    [() => "GROUP: " + (Board.group || "-"), () => Board.askGroup(), false, null, "SHARE THE CODE WITH FRIENDS"],
+    [() => (Board.name ? "NAME: " + Board.name : "ENTER YOUR NAME"), () => Board.askName(() => Board.load()),
+      false, null, "YOUR NAME ON THE BOARD"],
     ["BACK", () => goTitle()],
+  ] },
+  name: { sel: 0, items: [
+    ["OK", () => Board.finishName(true), true],
+    ["CANCEL", () => Board.finishName(false), true],
   ] },
 };
 
@@ -882,13 +893,6 @@ function syncInstallItem() {
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvt = e; syncInstallItem(); });
 window.addEventListener("appinstalled", () => { installEvt = null; syncInstallItem(); });
 syncInstallItem();
-
-function toggleBoardView() {
-  if (!Board.group && Board.view === "all") { Board.askGroup(); Sound.play("menu"); return; }
-  Board.view = Board.view === "group" ? "all" : "group";
-  Sound.play("menu");
-  Board.load();
-}
 
 function goTitle() { scene = "title"; paused = false; rebinding = null; rebindMsg = ""; clearHeld(); resize(); }
 
@@ -1384,6 +1388,13 @@ document.addEventListener("keydown", e => {
     return;
   }
 
+  // typing a name: the hidden input takes the letters, only Enter / Esc matter here
+  if (scene === "name") {
+    if (k === "Enter") { e.preventDefault(); Board.finishName(true); }
+    else if (k === "Escape") Board.finishName(false);
+    return;
+  }
+
   if (k === "m") { Sound.cycle(); toast = { t: 0 }; return; }
   if (k === "f") { toggleFullscreen(); return; }
 
@@ -1435,6 +1446,7 @@ canvas.addEventListener("pointerdown", e => {
   for (const h of hits) {
     if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) { h.fn(); return; }
   }
+  if (scene === "name") { try { nameInput.focus({ preventScroll: true }); } catch (err) {} return; }
   if (scene === "game" && !activeMenu() && (phase === "play" || phase === "ready")) {
     try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
     gesture = {
@@ -1611,7 +1623,7 @@ function drawBoard() {
   drawScreenFrame();
   text("LEADERBOARD", 128, 12, "#ffd860", "center");
   dottedLine(24, 24, 208);
-  text(Board.view === "group" ? "FRIENDS: " + Board.group : "EVERYONE", 128, 30, "#9ec0ff", "center");
+  text("TOP PLAYERS", 128, 30, "#9ec0ff", "center");
   if (Board.status) text(Board.status, 128, 80, "#8ab4ff", "center");
   (Board.rows || []).forEach((r, i) => {
     const y = 44 + i * 10;
@@ -1621,10 +1633,30 @@ function drawBoard() {
     text(r.name, 44, y, c);
     text(String(r.score), 236, y, c, "right");
   });
-  drawMenu(menus.board, 128, 150, 11);
-  const desc = menus.board.items[menus.board.sel][4];
-  if (desc) text(desc, 128, 196, "#8ab4ff", "center");
-  text(isTouch ? "TAP A ROW" : "L/R: SWITCH  ESC: BACK", 128, 206, "#4f62b0", "center");
+  drawMenu(menus.board, 128, 160, 13);
+  text(isTouch ? "TAP A ROW" : "ENTER: CHOOSE  ESC: BACK", 128, 204, "#4f62b0", "center");
+}
+
+// name entry, drawn like the rest of the game; the letters come from the hidden #nameInput
+function drawNameEntry() {
+  drawStars(titleStars, 0, 0, "#7fd0ff");
+  drawScreenFrame();
+  text("YOUR NAME", 128, 12, "#ffd860", "center");
+  dottedLine(24, 24, 208);
+  text("SHOWN ON THE LEADERBOARD", 128, 44, "#9ec0ff", "center");
+  rect(40, 68, 176, 26, "#08082c");
+  frame(40, 68, 176, 26, "#8a7aff");
+  frame(42, 70, 172, 22, "#3a2f9a");
+  const v = nameInput.value;
+  ctx.font = `8px ${FONT}`;
+  const w = Math.ceil(ctx.measureText(v).width);
+  text(v, 128, 77, "#ffffff", "center");
+  if (v.length < 12 && Math.floor(now / 400) % 2 === 0) rect(128 + Math.ceil(w / 2) + 1, 84, 7, 2, "#ff5aa8");
+  text(v.length + "/12", 212, 98, "#4f62b0", "right");
+  text(isTouch ? "TAP THE BOX TO TYPE" : "TYPE YOUR NAME", 128, 112, "#8ab4ff", "center");
+  menus.name.sel = v.trim() ? 0 : 1;
+  drawMenu(menus.name, 128, 140, 16);
+  text(isTouch ? "" : "ENTER: OK  ESC: CANCEL", 128, 204, "#4f62b0", "center");
 }
 
 function drawSettings() {
@@ -1931,6 +1963,7 @@ function render() {
   else if (scene === "scoring") drawInfoScreen("SCORING", SCORING, true, 12, 30);
   else if (scene === "credits") drawInfoScreen("CREDITS", CREDITS, false);
   else if (scene === "board") drawBoard();
+  else if (scene === "name") drawNameEntry();
   else if (scene === "install") drawInfoScreen("INSTALL APP", INSTALL_HELP, false, 14, 36);
   else drawGame();
 }
