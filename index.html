@@ -54,32 +54,51 @@
     .pad {
       display: none;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      width: min(calc(50vw - 22px), 190px);
+      gap: 10px;
+      width: min(calc(50vw - 20px), 230px);
     }
     #padL { grid-area: padL; }
     #padR { grid-area: padR; }
+    /* chunky arcade keys: a raised top on a darker base, pushed down while held */
     .pad button {
+      --top: #2448b8; --top2: #183a9a; --edge: #0a1a5c; --rim: #7f9cff;
+      position: relative;
       font: 11px "Press Start 2P", monospace;
       font-variant-emoji: text;
       color: #fff;
-      background: #14286e;
-      border: 2px solid #3858c8;
-      border-top-color: #8aa8ff;
-      border-left-color: #8aa8ff;
-      border-radius: 6px;
-      height: 54px;
+      text-shadow: 0 2px 0 rgba(0, 0, 20, 0.6);
+      background: linear-gradient(180deg, var(--top) 0%, var(--top2) 100%);
+      border: 2px solid var(--rim);
+      border-radius: 12px;
+      height: 58px;
+      box-shadow: 0 5px 0 var(--edge), 0 7px 12px rgba(0, 0, 0, 0.55),
+        inset 0 2px 0 rgba(255, 255, 255, 0.28), inset 0 -3px 0 rgba(0, 0, 40, 0.3);
+      transition: transform 40ms, box-shadow 40ms, filter 40ms;
       touch-action: none;
+      cursor: pointer;
     }
-    .pad button.big { font-size: 16px; }
-    .pad button.on { background: #2a4ab0; transform: translateY(1px); }
+    .pad button.big { font-size: 18px; }
+    .pad button.on {
+      transform: translateY(4px);
+      filter: brightness(1.25);
+      box-shadow: 0 1px 0 var(--edge), 0 2px 4px rgba(0, 0, 0, 0.5),
+        inset 0 2px 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 rgba(0, 0, 40, 0.3);
+    }
     .pad .wide { grid-column: span 2; }
+    /* the action keys get their own colours so they're easy to find without looking */
+    .pad button[data-act="drop"] { --top: #d23a7c; --top2: #a8245e; --edge: #5a0c32; --rim: #ff8ac0; }
+    .pad button[data-act="rotate"] { --top: #2a8fb8; --top2: #1d6d92; --edge: #0a3550; --rim: #8ae0ff; }
+    .pad button[data-act="pause"], .pad button[data-act="hold"] { font-size: 10px; }
+    /* in menus: OK stands out, the rest stay calm */
+    html.menu-pad .pad button[data-act="drop"] { --top: #2fae5c; --top2: #1f8a44; --edge: #0b4220; --rim: #8cf0a8; }
+    html.menu-pad .pad button[data-act="rotate"] { --top: #2448b8; --top2: #183a9a; --edge: #0a1a5c; --rim: #7f9cff; }
 
     html.touch .pad { display: grid; }
     html.touch body {
       grid-template-areas: "screen screen" "padL padR";
       grid-template-columns: auto auto;
-      column-gap: 12px;
+      column-gap: 14px;
+      row-gap: 14px;
     }
     @media (orientation: landscape) {
       html.touch body {
@@ -87,7 +106,7 @@
         grid-template-columns: auto auto auto;
       }
       html.touch .pad { width: min(20vw, 170px); }
-      html.touch .pad button { height: 60px; }
+      html.touch .pad button { height: 62px; }
     }
   </style>
 </head>
@@ -123,6 +142,7 @@ const LAYOUTS = {
   tall: { W: 160, H: 276, PF_X: 30, PF_Y: 66 },
 };
 let layout = "wide";
+const MENU_MAX_H = 440;                  // tallest a menu screen gets on an upright phone
 let { W, H, PF_X, PF_Y } = LAYOUTS.wide;
 const COLS = 10, ROWS = 20, CELL = 10;
 const FONT = '"Press Start 2P", monospace';
@@ -226,6 +246,9 @@ function resize() {
     if (tall > wide * 1.05) want = "tall";
   }
   if (want !== layout) { layout = want; ({ W, H, PF_X, PF_Y } = LAYOUTS[want]); }
+  // menu screens stretch down to fill a tall screen; their content is drawn in a 224-high band
+  if (layout === "wide") H = scene === "game" ? LAYOUTS.wide.H
+    : Math.max(LAYOUTS.wide.H, Math.min(MENU_MAX_H, Math.floor(availH / availW * W)));
 
   // fill the space: any scale, not just whole numbers. The canvas is drawn at a whole-number
   // scale S (sharp) that is at least as big as the screen needs, then shrunk a little by the browser.
@@ -311,7 +334,7 @@ function makeStars(n, w, h) {
     phase: Math.random() * Math.PI * 2, big: Math.random() < 0.18,
   }));
 }
-const titleStars = makeStars(70, W, H);
+const titleStars = makeStars(130, LAYOUTS.wide.W, MENU_MAX_H);
 const pfStars = makeStars(14, COLS * CELL, ROWS * CELL);
 
 // ============================================================
@@ -401,7 +424,8 @@ function drawMenu(menu, cx, y, gap) {
       triRight(Math.round(cx - w / 2) - 10 - off, yy, "#ff5aa8");
       triLeft(Math.round(cx + w / 2) + 6 + off, yy, "#ff5aa8");
     }
-    hits.push({ x: cx - w / 2 - 14, y: yy - 3, w: w + 28, h: gap, fn: () => chooseMenu(menu, i) });
+    const oy = ctx.getTransform().f / S;          // the screen may be drawn shifted down
+    hits.push({ x: cx - w / 2 - 14, y: yy - 3 + oy, w: w + 28, h: gap, menu, i, fn: () => chooseMenu(menu, i) });
   });
 }
 
@@ -1626,6 +1650,13 @@ canvas.addEventListener("pointerdown", e => {
 });
 
 canvas.addEventListener("pointermove", e => {
+  // pointing at a menu row with a mouse highlights it
+  if (e.pointerType === "mouse") {
+    const r = canvas.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * W, y = (e.clientY - r.top) / r.height * H;
+    const h = hits.find(h => h.menu && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+    if (h && h.menu.sel !== h.i) { h.menu.sel = h.i; Sound.play("menu"); }
+  }
   const g = gesture;
   if (!g || e.pointerId !== g.id) return;
   e.preventDefault();
@@ -1664,6 +1695,57 @@ canvas.addEventListener("pointerup", endGesture);
 canvas.addEventListener("pointercancel", e => { if (gesture && e.pointerId === gesture.id) gesture = null; });
 canvas.addEventListener("contextmenu", e => e.preventDefault());
 
+// on menu screens the pad works like a controller: up/down move, left/right change a setting,
+// OK picks, BACK leaves
+const INFO_SCENES = ["controls", "scoring", "credits", "install"];
+const padMode = () => (scene === "game" && !activeMenu() ? "game" : "menu");
+function padMenu(a) {
+  if (rebinding) return true;
+  if (scene === "name") {
+    if (a === "drop") Board.finishName(true);
+    else if (a === "hold" || a === "pause") Board.finishName(false);
+    return true;
+  }
+  if (INFO_SCENES.includes(scene)) {
+    if (a === "drop" || a === "hold" || a === "pause") { Sound.play("menu"); goTitle(); }
+    return true;
+  }
+  const menu = activeMenu();
+  if (!menu) return false;
+  const n = menu.items.length, item = menu.items[menu.sel];
+  if (a === "rotate") { menu.sel = (menu.sel + n - 1) % n; Sound.play("menu"); }
+  else if (a === "down") { menu.sel = (menu.sel + 1) % n; Sound.play("menu"); }
+  else if (a === "left" || a === "right") {
+    if (item[3]) item[3](a === "left" ? -1 : 1);
+    else { menu.sel = (menu.sel + (a === "left" ? n - 1 : 1)) % n; Sound.play("menu"); }
+  }
+  else if (a === "drop") chooseMenu(menu, menu.sel);
+  else if (a === "hold" || a === "pause") {
+    if (menu === menus.pause) { paused = false; Sound.play("pause"); }
+    else if (menu.back) { Sound.play("pause"); menu.back(); }
+  }
+  return true;
+}
+// button labels follow what the pad does right now
+const PAD_LABELS = {
+  game: { rotate: "↻︎", drop: "DROP", hold: "HOLD", pause: "II" },
+  menu: { rotate: "▲︎", drop: "OK", hold: "BACK", pause: "II" },
+};
+let padShown = "";
+function syncPad() {
+  const m = padMode();
+  if (m === padShown) return;
+  padShown = m;
+  document.documentElement.classList.toggle("menu-pad", m === "menu");
+  document.querySelectorAll(".pad button").forEach(b => {
+    const l = PAD_LABELS[m][b.dataset.act];
+    if (l) b.textContent = l;
+  });
+}
+// holding up/down in a menu keeps moving
+let padRepeat = null;
+function stopPadRepeat() { clearTimeout(padRepeat); padRepeat = null; }
+
 document.querySelectorAll(".pad button").forEach(btn => {
   const a = btn.dataset.act;
   btn.addEventListener("pointerdown", e => {
@@ -1671,9 +1753,19 @@ document.querySelectorAll(".pad button").forEach(btn => {
     try { btn.setPointerCapture(e.pointerId); } catch (err) {}
     btn.classList.add("on");
     buzz(6);
+    if (padMode() === "menu" && padMenu(a)) {
+      if (a === "rotate" || a === "down") {
+        stopPadRepeat();
+        const again = d => { padRepeat = setTimeout(() => { if (padMode() === "menu") { padMenu(a); again(110); } }, d); };
+        again(380);
+      }
+      syncPad();
+      return;
+    }
     press(a);
+    syncPad();
   });
-  const up = () => { btn.classList.remove("on"); release(a); };
+  const up = () => { btn.classList.remove("on"); stopPadRepeat(); release(a); };
   btn.addEventListener("pointerup", up);
   btn.addEventListener("pointercancel", up);
   btn.addEventListener("contextmenu", e => e.preventDefault());
@@ -1703,9 +1795,12 @@ function drawScreenFrame() {
 }
 
 function drawTitle() {
-  drawStars(titleStars, 0, 0, "#7fd0ff");
-  drawScreenFrame();
+  band(0.16, drawLogo);
+  band(0.36, drawTitleWell);
+  band(0.56, drawTitleMenu);
+}
 
+function drawLogo() {
   // logo panel
   rect(20, 10, 216, 56, "#08082c");
   frame(20, 10, 216, 56, "#8a7aff");
@@ -1728,6 +1823,9 @@ function drawTitle() {
   ctx.fillStyle = grad;
   ctx.fillText(GAME_TITLE, 128, ly);
   text("FALLING BLOCK PUZZLE", 128, 50, "#8ab4ff", "center");
+}
+
+function drawTitleWell() {
 
   // little animated well
   drawBox(101, 72, 54, 64);
@@ -1748,16 +1846,21 @@ function drawTitle() {
     if (r < 0) continue;
     ctx.drawImage(SPR[10][flash && r >= 4 ? 9 : 3], wx + 40, wy + r * 10);
   }
+}
+
+function drawTitleMenu() {
 
   const n = menus.title.items.length, many = n > 5;   // 7 when an INSTALL APP row is showing
-  drawMenu(menus.title, 128, 140, n > 6 ? 8 : many ? 9 : 11);
-  text("HI " + String(hi).padStart(6, "0"), 128, many ? 199 : 197, "#8ab4ff", "center");
-  if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, many ? 211 : 209, "#4f62b0", "center");
+  // more room on a tall screen: space the rows out
+  const gap = Math.min(16, (n > 6 ? 8 : many ? 9 : 11) + Math.floor(extraH / 30));
+  drawMenu(menus.title, 128, 140, gap);
+  // pinned to the bottom of the screen
+  const fy = Math.round(extraH * 0.44);
+  text("HI " + String(hi).padStart(6, "0"), 128, (many ? 199 : 197) + fy, "#8ab4ff", "center");
+  if (blink(600)) text(isTouch ? "TAP OR USE THE BUTTONS" : "PRESS ENTER", 128, (many ? 211 : 209) + fy, "#4f62b0", "center");
 }
 
 function drawInfoScreen(title, rows, twoCol, gap = 16, top = 42) {
-  drawStars(titleStars, 0, 0, "#7fd0ff");
-  drawScreenFrame();
   text(title, 128, 12, "#ffd860", "center");
   dottedLine(24, 24, 208);
   rows.forEach((row, i) => {
@@ -1776,20 +1879,19 @@ function drawInfoScreen(title, rows, twoCol, gap = 16, top = 42) {
 
 // a screen made of a menu (settings, key bindings) with a hint line under it
 function drawMenuScreen(title, menu, top, gap, hint, foot) {
-  drawStars(titleStars, 0, 0, "#7fd0ff");
-  drawScreenFrame();
-  text(title, 128, 12, "#ffd860", "center");
-  dottedLine(24, 24, 208);
-  drawMenu(menu, 128, top, gap);
+  // on a tall screen the rows get more room; the title and hints move out to match
+  const n = menu.items.length, more = Math.min(6, Math.floor(extraH / (n + 4)));
+  const up = Math.round(n * more / 2), down = n * more - up;
+  text(title, 128, 12 - up, "#ffd860", "center");
+  dottedLine(24, 24 - up, 208);
+  drawMenu(menu, 128, top - up, gap + more);
   const desc = menu.items[menu.sel][4];
-  if (hint) text(hint, 128, 178, rebindMsg ? "#ff6a80" : "#8ab4ff", "center");
-  else if (desc) text(desc, 128, 178, "#8ab4ff", "center");
-  text(isTouch ? "TAP A ROW" : foot, 128, 204, "#4f62b0", "center");
+  if (hint) text(hint, 128, 178 + down, rebindMsg ? "#ff6a80" : "#8ab4ff", "center");
+  else if (desc) text(desc, 128, 178 + down, "#8ab4ff", "center");
+  text(isTouch ? "TAP A ROW OR USE BUTTONS" : foot, 128, 204 + down, "#4f62b0", "center");
 }
 
 function drawBoard() {
-  drawStars(titleStars, 0, 0, "#7fd0ff");
-  drawScreenFrame();
   text("LEADERBOARD", 128, 10, "#ffd860", "center");
   dottedLine(24, 21, 208);
   const sprint = Board.mode === "sprint";
@@ -1814,14 +1916,12 @@ function drawBoard() {
   (Board.rows || []).forEach((r, i) => row(r, i + 1, 40 + i * 10, r.name === Board.name));
   if (Board.me) { dottedLine(24, 141, 208); row(Object.assign({ name: Board.name }, Board.me), Board.me.rank, 145, true); }
   drawMenu(menus.board, 128, 166, 13);
-  text(isTouch ? "TAP A ROW" : "ENTER: CHOOSE  ESC: BACK", 128, 204, "#4f62b0", "center");
+  text(isTouch ? "TAP A ROW OR USE BUTTONS" : "ENTER: CHOOSE  ESC: BACK", 128, 204, "#4f62b0", "center");
 }
 
 
 // name entry, drawn like the rest of the game; the letters come from the hidden #nameInput
 function drawNameEntry() {
-  drawStars(titleStars, 0, 0, "#7fd0ff");
-  drawScreenFrame();
   text("YOUR NAME", 128, 12, "#ffd860", "center");
   dottedLine(24, 24, 208);
   text("SHOWN ON THE LEADERBOARD", 128, 44, "#9ec0ff", "center");
@@ -2152,6 +2252,12 @@ function drawHudTall(cx) {
 function render() {
   hits = [];
   rect(0, 0, W, H, "#000");
+  if (scene === "game") { drawGame(); return; }
+  drawStars(titleStars, 0, 0, "#7fd0ff");
+  drawScreenFrame();
+  extraH = H - LAYOUTS.wide.H;
+  ctx.save();
+  if (scene !== "title") ctx.translate(0, Math.round(extraH / 2));
   if (scene === "title") drawTitle();
   else if (scene === "settings") drawSettings();
   else if (scene === "keys") drawKeys();
@@ -2161,7 +2267,12 @@ function render() {
   else if (scene === "board") drawBoard();
   else if (scene === "name") drawNameEntry();
   else if (scene === "install") drawInfoScreen("INSTALL APP", INSTALL_HELP, false, 14, 36);
-  else drawGame();
+  ctx.restore();
+}
+let extraH = 0;                           // how much taller than 224 a menu screen is drawn
+// draws part of the title screen pushed down by a share of the extra height
+function band(share, fn) {
+  ctx.save(); ctx.translate(0, Math.round(extraH * share)); fn(); ctx.restore();
 }
 
 let last = performance.now();
@@ -2173,6 +2284,7 @@ function loop(t) {
   try {
     update(dt);
     render();
+    syncPad();
   } catch (err) {
     console.error(err);
     if (!Number.isFinite(score)) { score = 0; shownScore = 0; }
