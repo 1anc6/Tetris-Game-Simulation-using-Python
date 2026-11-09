@@ -692,6 +692,9 @@ let hDir = 0, dasT = 0, arrT = 0;
 let hi = 0;
 try { hi = Number(localStorage.getItem("stackfall-hi")) || 0; } catch (e) {}
 function saveHi() { try { localStorage.setItem("stackfall-hi", String(hi)); } catch (e) {} }
+// lines/level of the best game, so the best can be sent to the leaderboard later (older bests have none)
+let hiStats = null;
+try { hiStats = JSON.parse(localStorage.getItem("stackfall-hi-stats") || "null"); } catch (e) {}
 
 // ---- online leaderboard (Supabase; table + rules in supabase/leaderboard.sql) ----
 // The publishable key is meant to be public: the database only allows reading scores and adding new ones.
@@ -724,7 +727,11 @@ const Board = {
     nameInput.blur();
     scene = this.prevScene;
     const saved = ok && !!n;
-    if (saved) { this.name = n; lsSet("stackfall-name", n); }
+    if (saved) {
+      this.name = n; lsSet("stackfall-name", n);
+      // send the best already on this device (needs its lines/level for the server's sanity check)
+      if (hi > 0 && hiStats) this.submit(hi, hiStats.lines, hiStats.level);
+    }
     Sound.play(saved ? "select" : "pause");
     const cb = this.nameDone; this.nameDone = null;
     if (cb) cb(saved);
@@ -1270,7 +1277,7 @@ function finishClear() {
 function gameOver() {
   phase = "over"; phaseT = 0; cur = null;
   menus.over.sel = 0;
-  if (score > hi) { hi = score; newBest = true; saveHi(); }
+  if (score > hi) { hi = score; newBest = true; saveHi(); hiStats = { lines, level }; lsSet("stackfall-hi-stats", JSON.stringify(hiStats)); }
   Board.submit(score, lines, level);
   clearHeld();
   Sound.syncMusic(false);
@@ -1581,7 +1588,7 @@ function drawTitle() {
   }
 
   const n = menus.title.items.length, many = n > 5;   // 7 when an INSTALL APP row is showing
-  drawMenu(menus.title, 128, n > 6 ? 134 : many ? 136 : 140, n > 6 ? 9 : many ? 10 : 11);
+  drawMenu(menus.title, 128, 140, n > 6 ? 8 : many ? 9 : 11);
   text("HI " + String(hi).padStart(6, "0"), 128, many ? 199 : 197, "#8ab4ff", "center");
   if (blink(600)) text(isTouch ? "TAP TO SELECT" : "PRESS ENTER", 128, many ? 211 : 209, "#4f62b0", "center");
 }
