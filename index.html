@@ -92,6 +92,11 @@
     /* in menus: OK stands out, the rest stay calm */
     html.menu-pad .pad button[data-act="drop"] { --top: #2fae5c; --top2: #1f8a44; --edge: #0b4220; --rim: #8cf0a8; }
     html.menu-pad .pad button[data-act="rotate"] { --top: #2448b8; --top2: #183a9a; --edge: #0a1a5c; --rim: #7f9cff; }
+    /* in menus the pad is just up/down on the left and OK/BACK on the right */
+    .pad .menu-only { display: none; }
+    html.menu-pad .pad .menu-only { display: block; }
+    html.menu-pad .pad .game-only { display: none; }
+    html.menu-pad #padR button { grid-column: span 2; }
 
     html.touch .pad { display: grid; }
     html.touch body {
@@ -118,15 +123,16 @@
     style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;pointer-events:none" />
 
   <div class="pad" id="padL">
-    <button data-act="left" class="big" aria-label="Move left">&#x25C0;&#xFE0E;</button>
-    <button data-act="right" class="big" aria-label="Move right">&#x25B6;&#xFE0E;</button>
+    <button data-act="rotate" class="big wide menu-only" aria-label="Up">&#x25B2;&#xFE0E;</button>
+    <button data-act="left" class="big game-only" aria-label="Move left">&#x25C0;&#xFE0E;</button>
+    <button data-act="right" class="big game-only" aria-label="Move right">&#x25B6;&#xFE0E;</button>
     <button data-act="down" class="big wide" aria-label="Soft drop">&#x25BC;&#xFE0E;</button>
   </div>
   <div class="pad" id="padR">
-    <button data-act="rotate" class="big" aria-label="Rotate">&#x21BB;&#xFE0E;</button>
+    <button data-act="rotate" class="big game-only" aria-label="Rotate">&#x21BB;&#xFE0E;</button>
     <button data-act="drop" aria-label="Hard drop">DROP</button>
     <button data-act="hold">HOLD</button>
-    <button data-act="pause" aria-label="Pause">II</button>
+    <button data-act="pause" class="game-only" aria-label="Pause">II</button>
   </div>
 
 <script>
